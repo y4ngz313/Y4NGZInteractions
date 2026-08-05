@@ -1,0 +1,36 @@
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.dll
+*.pdb
+*.deps.json
+*.exe
+*.zip
+*.log
+*.bak*
+*.codex-backup*
+*.stackdump
+deploy/
+artifacts/
+
+# Local-only working trees: retired code kept for reference and raw research notes.
+/_archive/
+/research/
+
+# Local dependency/reference DLLs copied per developer machine.
+src/**/libs/
+src/**/lib/
+src/**/refs/
+
+# Local packaging output.
+release/staging/
+release/dist/
+release/build-deploy-sink/
+release/verify-deploy/
+
+# Consumer animation payloads are owned by the consuming mods (Y4NGZUpgrades,
+# Y4NGZCompany, Y4NGZMonsters), never by this API. What remains here on disk is
+# local dev-only scratch (the drone tablet viewmodel probe bundle), untracked.
+/runtime-assets/
