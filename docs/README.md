@@ -19,7 +19,7 @@ Last updated: 2026-08-05
 | [internal/RESTORE_SEAM_INTERNALS.md](internal/RESTORE_SEAM_INTERNALS.md) | The restore seam: ownership, restore scopes, kill-switch and diagnostic config catalogue, log-marker glossary, debug probe usage |
 | [ANIMATION_API_DECISIONS.md](ANIMATION_API_DECISIONS.md) | Decision log (ADRs). Read before proposing runtime changes; `SUPERSEDED` entries are kept so old reasoning is not re-litigated |
 | [WEAPON_RETARGET_PIPELINE.md](WEAPON_RETARGET_PIPELINE.md) | Source of truth for the weapon use type: first-person weapon retarget, animated props, third-person derivation. Specialises `ANIMATION_AUTHORING_PIPELINE.md`; read that one first |
-| [Handoffs/](Handoffs/) | Dated, write-once session handoffs |
+| [handoffs/active/](handoffs/active/) | Work that is actively paused on an open issue; historical handoffs live under `handoffs/archive/YYYY-MM/` |
 
 ## Lifecycle rules
 
@@ -27,7 +27,8 @@ Last updated: 2026-08-05
 |---|---|---|
 | `docs/` | Living docs, one per animation use type or workflow | Updated in place; stale or overturned claims are deleted, never appended to |
 | `docs/internal/` | Maintainer documentation for internals that are not part of the public contract | Same as living docs |
-| `docs/Handoffs/` | Dated session handoffs (`YYYY-MM-DD-topic-handoff.md`) | Written once, never edited. State and open questions only — never a prescribed next step |
+| `docs/handoffs/active/` | Handoffs for work actively paused on an open issue | Updated only while paused; consumed on resume or resolution, then moved to the dated archive |
+| `docs/handoffs/archive/YYYY-MM/` | Historical handoffs retained as evidence | Read-only context, never current instructions or a backlog |
 
 Every living doc carries a `Last updated: YYYY-MM-DD` stamp, bumped on every edit. If a change
 alters behaviour a doc describes, updating that doc is part of finishing the work. Contradicted
@@ -35,6 +36,11 @@ claims are deleted on sight; corrections are not appended alongside the thing th
 
 Before creating a document, decide whether the work fits an existing use type. Extend the existing
 living document unless the task introduces a genuinely new one — never spawn a near-duplicate.
+
+Pending work, acceptance criteria, investigation state, and verification requests belong in issues
+and pull requests. Durable, verified behavior and repeatable workflows belong in the living docs
+indexed here. Rejected experiments and transient evidence stay in issue comments or archived
+handoffs.
 
 The retired v1 PlayerAnimationApi source, documentation, regression script, and probe bundle are
 retained under `_archive/player-animation-api-v1/`, outside the build.
