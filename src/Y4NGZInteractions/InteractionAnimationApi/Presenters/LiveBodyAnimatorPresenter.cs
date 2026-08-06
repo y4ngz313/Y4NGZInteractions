@@ -3047,6 +3047,23 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 $"frame={Time.frameCount} handle={context.Handle} phase='start' " +
                 $"count={reappliedParameters}.");
 
+            // The controller swap reset the base layer to its default (standing) state, and
+            // vanilla enters the crouch state only through the "startCrouching" trigger — an
+            // input edge that already passed when the session starts while the player is
+            // crouched. The crouch-edge tracker above is seeded to the current stance, so it
+            // will never fire that entry either. Actively place the fresh base layer in the
+            // crouch state now; otherwise the body stands while the capsule/camera sit at
+            // crouch height for the entire session.
+            if (captureCrouching)
+            {
+                FireTriggerIfExists(VanillaStartCrouchingTrigger);
+                context.Logger?.LogInfo(
+                    "[RestoreSeam.locomotion] crouch_entry_asserted: " +
+                    $"frame={Time.frameCount} handle={context.Handle} phase='start' " +
+                    "reason='session_started_while_crouched' " +
+                    "action='fire_startCrouching_on_fresh_base_layer'.");
+            }
+
             SetBoolIfExists(body.activeBool, true);
             FireTriggerIfExists(body.enterTrigger);
             elapsedSeconds = 0f;
@@ -3346,19 +3363,23 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 // state a stale stance pose. Skip its forced replay and let the locomotion
                 // parameters — synced to CURRENT player state before the replay evaluates —
                 // drive layer 0 instead. Other layers restore as usual.
-                bool stanceMismatch = false;
-                if (snapshot.CapturedCrouching.HasValue)
+                bool currentCrouching = false;
+                bool currentCrouchingKnown = false;
+                try
                 {
-                    bool currentCrouching = snapshot.CapturedCrouching.Value;
-                    try
+                    GameNetcodeStuff.PlayerControllerB player = context?.Request?.Player;
+                    if (player != null)
                     {
-                        GameNetcodeStuff.PlayerControllerB player = context?.Request?.Player;
-                        if (player != null)
-                            currentCrouching = player.isCrouching;
+                        currentCrouching = player.isCrouching;
+                        currentCrouchingKnown = true;
                     }
-                    catch { }
-                    stanceMismatch = currentCrouching != snapshot.CapturedCrouching.Value;
                 }
+                catch { }
+
+                bool stanceMismatch =
+                    snapshot.CapturedCrouching.HasValue &&
+                    currentCrouchingKnown &&
+                    currentCrouching != snapshot.CapturedCrouching.Value;
                 if (stanceMismatch)
                 {
                     context?.Logger?.LogInfo(
@@ -3376,6 +3397,27 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     syncParametersBeforeStateReplay:
                         () => SyncVanillaLocomotionParameters("stop_pre_state_replay"),
                     restoreBaseLayerState: !stanceMismatch);
+
+                // When the captured base-layer state was not replayed (Fresh restore mode, or
+                // a stance mismatch skipped the replay), the restored vanilla controller sits
+                // in its default (standing) base state. Vanilla only fires "startCrouching" on
+                // the crouch input edge — already consumed — so a player still crouched at stop
+                // would keep a standing base pose indefinitely, and the next session would then
+                // snapshot that broken pose as its baseline. Re-assert the crouch entry so the
+                // restored base layer matches the live stance.
+                if (restored && currentCrouchingKnown && currentCrouching &&
+                    (stanceMismatch || restoreStateMode == AnimatorStateRestoreMode.Fresh))
+                {
+                    FireTriggerIfExists(VanillaStartCrouchingTrigger);
+                    try { bodyAnimator.Update(0f); } catch { }
+                    context?.Logger?.LogInfo(
+                        "[RestoreSeam.locomotion] crouch_entry_asserted: " +
+                        $"frame={Time.frameCount} handle={context.Handle} phase='stop' " +
+                        $"stanceMismatch={stanceMismatch} " +
+                        $"restoreStateMode='{FormatRestoreStateMode(restoreStateMode)}' " +
+                        "action='fire_startCrouching_on_restored_base_layer'.");
+                }
+
                 return restored ? "restored" : "controller_changed_externally";
             }
             catch (Exception exception)
@@ -4717,6 +4759,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             try { bodyAnimator.ResetTrigger(parameterName); } catch { }
         }
 
+        // Animator.parameters allocates a fresh managed array on every read, and this
+        // lookup runs several times per tick from the locomotion sync plus once per
+        // consumer-fired trigger (per shot on automatic weapons). Parameter presence is
+        // immutable per controller, so cache it per controller instance.
+        private RuntimeAnimatorController parameterCacheController;
+        private readonly Dictionary<(string, AnimatorControllerParameterType), bool> parameterPresenceCache =
+            new Dictionary<(string, AnimatorControllerParameterType), bool>();
+
         private bool HasParameter(string parameterName, AnimatorControllerParameterType parameterType)
         {
             if (bodyAnimator == null)
@@ -4724,15 +4774,31 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             try
             {
+                RuntimeAnimatorController controller = bodyAnimator.runtimeAnimatorController;
+                if (!ReferenceEquals(controller, parameterCacheController))
+                {
+                    parameterPresenceCache.Clear();
+                    parameterCacheController = controller;
+                }
+
+                (string, AnimatorControllerParameterType) key = (parameterName, parameterType);
+                if (parameterPresenceCache.TryGetValue(key, out bool cached))
+                    return cached;
+
+                bool found = false;
                 AnimatorControllerParameter[] parameters = bodyAnimator.parameters;
                 for (int i = 0; i < parameters.Length; i++)
                 {
                     if (parameters[i].type == parameterType &&
                         string.Equals(parameters[i].name, parameterName, StringComparison.Ordinal))
                     {
-                        return true;
+                        found = true;
+                        break;
                     }
                 }
+
+                parameterPresenceCache[key] = found;
+                return found;
             }
             catch { }
 
