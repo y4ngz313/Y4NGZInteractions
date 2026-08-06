@@ -20,6 +20,15 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         public RuntimeAnimatorController RuntimeAnimatorController { get; }
         public float Speed { get; }
 
+        /// <summary>
+        /// Player stance (PlayerControllerB.isCrouching) at capture time, set by the presenter
+        /// immediately after <see cref="Capture"/>. Null when the capturer had no player.
+        /// Restore uses it to refuse replaying a stale base-layer state when the player's
+        /// stance changed during the session (equip-while-crouched must not replay a crouch
+        /// pose after standing).
+        /// </summary>
+        public bool? CapturedCrouching { get; set; }
+
         private AnimatorStateSnapshot(
             RuntimeAnimatorController runtimeAnimatorController,
             float speed,
@@ -135,6 +144,35 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             bool rebindAnimator,
             AnimatorStateRestoreMode restoreMode)
         {
+            return Restore(
+                animator,
+                expectedCurrentController,
+                rebindAnimator,
+                restoreMode,
+                syncParametersBeforeStateReplay: null,
+                restoreBaseLayerState: true);
+        }
+
+        /// <param name="syncParametersBeforeStateReplay">
+        /// Invoked after the captured parameters are rewritten but BEFORE any forced state
+        /// replay and the zero-delta Animator.Update. Lets the caller overwrite stale
+        /// transition-gated locomotion parameters ("Walking", "crouching", "Jumping") with the
+        /// player's CURRENT state so the replayed frame is not driven by equip-time values.
+        /// </param>
+        /// <param name="restoreBaseLayerState">
+        /// False skips the forced Play/CrossFade of the captured base-layer (layer 0) state —
+        /// used when the player's stance changed during the session, so the freshly synced
+        /// parameters drive layer 0 instead of a stale crouch/stand pose. Other layers and the
+        /// base-layer weight are restored as usual.
+        /// </param>
+        public bool Restore(
+            Animator animator,
+            RuntimeAnimatorController expectedCurrentController,
+            bool rebindAnimator,
+            AnimatorStateRestoreMode restoreMode,
+            Action syncParametersBeforeStateReplay,
+            bool restoreBaseLayerState)
+        {
             if (animator == null)
             {
                 return false;
@@ -162,11 +200,22 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     parameters[i].Restore(animator);
                 }
 
+                // Overwrite stale transition-gated locomotion parameters from live player state
+                // before the forced state replay below evaluates — otherwise the equip-time
+                // values captured above drive the replayed frame.
+                if (syncParametersBeforeStateReplay != null)
+                {
+                    try { syncParametersBeforeStateReplay(); } catch { }
+                }
+
                 int layerCount = Math.Min(animator.layerCount, layers.Length);
                 for (int i = 0; i < layerCount; i++)
                 {
                     LayerSnapshot layer = layers[i];
                     animator.SetLayerWeight(i, layer.Weight);
+
+                    if (i == 0 && !restoreBaseLayerState)
+                        continue;
 
                     if (layer.FullPathHash != 0)
                     {

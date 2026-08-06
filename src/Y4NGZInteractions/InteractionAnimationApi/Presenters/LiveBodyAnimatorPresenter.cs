@@ -22,6 +22,17 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private const float CameraDisplacementGuardThreshold = 1.25f;
         private const float CameraRotationResidueThresholdDegrees = 0.02f;
         private const float CameraDriftHealThresholdMeters = 0.02f;
+        // Vanilla crouched viewpoint: player-local camera Y ~1.17 versus the standing rest
+        // height carried in VanillaCameraPlayerLocalRestExpectation.y (2.35).
+        private const float VanillaCameraCrouchedPlayerLocalRestHeight = 1.17f;
+        private const float StanceViewpointHeightToleranceMeters = 0.15f;
+        // Vanilla glides the camera between the stand and crouch heights over roughly a
+        // quarter second after isCrouching flips, so the mismatch must persist well past that
+        // glide before it is treated as a desynced viewpoint rather than a transition in
+        // flight. Counted in guard evaluations (one per Tick).
+        private const int StanceViewpointMismatchTicksRequired = 30;
+        private const string VanillaStartCrouchingTrigger = "startCrouching";
+        private const string VanillaCrouchingBool = "crouching";
         private const string CameraDisplacementGuardBaselineSource =
             "try_start_pre_controller";
         private static readonly Vector3 VanillaCameraPlayerLocalRestExpectation =
@@ -95,6 +106,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private bool cameraGuardPreExistingSuppressionLogged;
         private bool cameraGuardVanillaRestEnvelopeSuppressionLogged;
         private bool cameraGuardEvaluationUnavailableLogged;
+        private int stanceViewpointMismatchTicks;
+        private bool stanceViewpointLastCrouchState;
+        private bool hasStanceViewpointLastCrouchState;
+        private bool stanceViewpointGuardExemptLogged;
+        private bool hasLastSyncedCrouchState;
+        private bool lastSyncedCrouchState;
+        private int lastLocomotionSyncSignature = -1;
         private LocalCameraPositionStabilizer cameraPositionStabilizer;
         private LocalCameraRotationStabilizer cameraRotationStabilizer;
         private bool specialAnimationAutoStopExemptLogged;
@@ -377,6 +395,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             if (exitRequested)
                 exitElapsedSeconds += Mathf.Max(0f, deltaTime);
             ApplyLayerWeights();
+            // Vanilla writes "Walking"/"crouching"/"Jumping" only on state transitions, and it
+            // enters crouch via the "startCrouching" trigger — which the snapshot machinery
+            // never captures. Re-assert them every tick from live player state so a crouch or
+            // stand during the session cannot leave the session animator (and the viewpoint it
+            // drives) in the stale stance.
+            if (IsLocalPlayer(context?.Request?.Player))
+                SyncVanillaLocomotionParameters("tick");
             DriveMovementParameter();
             DetectAutoStopConditions();
             LogFrameDiagnostics();
@@ -758,6 +783,10 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             cameraGuardPreExistingSuppressionLogged = false;
             cameraGuardVanillaRestEnvelopeSuppressionLogged = false;
             cameraGuardEvaluationUnavailableLogged = false;
+            stanceViewpointMismatchTicks = 0;
+            stanceViewpointLastCrouchState = false;
+            hasStanceViewpointLastCrouchState = false;
+            stanceViewpointGuardExemptLogged = false;
         }
 
         private void StartLocalCameraPositionStabilizer(
@@ -1763,6 +1792,15 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             }
 
             Vector3 current = player.transform.InverseTransformPoint(player.gameplayCamera.transform.position);
+
+            // Stance-aware viewpoint invariant: a crouch-pose sink (~1.18 m) sits inside both
+            // the displacement threshold and the crouch<->stand envelope whitelist below, so
+            // the magnitude checks alone let a viewpoint stuck at crouch height while the
+            // player stands (or vice versa) run indefinitely. Evaluate it before the early
+            // return so the whitelist can no longer mask a stance-mismatched height.
+            if (EvaluateStanceViewpointInvariant(player, current))
+                return;
+
             float displacement = Vector3.Distance(current, cameraPlayerLocalPositionAtStart);
             if (displacement <= CameraDisplacementGuardThreshold)
                 return;
@@ -1834,6 +1872,91 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             context?.Logger?.LogError(
                 "[LCInteractionAnimationAPI] live_body.camera_displacement_guard.stop: " +
                 BuildMeasurements() + " action='stop_genuinely_new_displacement'.");
+        }
+
+        /// <summary>
+        /// Stance-aware half of the camera displacement guard: compares the camera's
+        /// player-local height against the expected height for the player's CURRENT stance
+        /// (standing rest 2.35 vs crouched rest ~1.17). A mismatch sustained past the vanilla
+        /// crouch-glide window trips the same auto-stop recovery path as the magnitude guard.
+        /// Returns true when it requested the stop (caller should bail out).
+        /// </summary>
+        private bool EvaluateStanceViewpointInvariant(
+            GameNetcodeStuff.PlayerControllerB player,
+            Vector3 cameraPlayerLocal)
+        {
+            bool crouching;
+            bool specialAnimation;
+            try
+            {
+                crouching = player.isCrouching;
+                specialAnimation = player.inSpecialInteractAnimation;
+            }
+            catch
+            {
+                return false;
+            }
+
+            // Special interact animations legitimately move the viewpoint outside both stance
+            // heights; vanilla owns the camera there and the auto-stop machinery already
+            // yields the session.
+            if (specialAnimation)
+            {
+                stanceViewpointMismatchTicks = 0;
+                return false;
+            }
+
+            // A stance flip restarts the debounce: vanilla glides the camera between the two
+            // heights after isCrouching changes, so the frames right after a flip always
+            // mismatch legitimately.
+            if (!hasStanceViewpointLastCrouchState ||
+                stanceViewpointLastCrouchState != crouching)
+            {
+                hasStanceViewpointLastCrouchState = true;
+                stanceViewpointLastCrouchState = crouching;
+                stanceViewpointMismatchTicks = 0;
+                return false;
+            }
+
+            float expectedHeight = crouching
+                ? VanillaCameraCrouchedPlayerLocalRestHeight
+                : VanillaCameraPlayerLocalRestExpectation.y;
+            float heightDeviation = Mathf.Abs(cameraPlayerLocal.y - expectedHeight);
+            if (heightDeviation <= StanceViewpointHeightToleranceMeters)
+            {
+                stanceViewpointMismatchTicks = 0;
+                return false;
+            }
+
+            stanceViewpointMismatchTicks++;
+            if (stanceViewpointMismatchTicks < StanceViewpointMismatchTicksRequired)
+                return false;
+
+            string measurements =
+                $"handle={context.Handle} interaction='{context.Manifest?.interactionId ?? "<none>"}' " +
+                $"crouching={crouching} camera_player_local_y={cameraPlayerLocal.y:0.###} " +
+                $"expected_height={expectedHeight:0.###} height_deviation={heightDeviation:0.###} " +
+                $"tolerance={StanceViewpointHeightToleranceMeters:0.###} " +
+                $"sustained_ticks={stanceViewpointMismatchTicks} " +
+                $"required_ticks={StanceViewpointMismatchTicksRequired}";
+
+            if (cameraGuardExempt)
+            {
+                if (!stanceViewpointGuardExemptLogged)
+                {
+                    stanceViewpointGuardExemptLogged = true;
+                    context?.Logger?.LogInfo(
+                        "[LCInteractionAnimationAPI] live_body.camera_displacement_guard.stance_mismatch_exempt: " +
+                        measurements + " action='continue_exempt'.");
+                }
+                return false;
+            }
+
+            shouldAutoStop = true;
+            context?.Logger?.LogError(
+                "[LCInteractionAnimationAPI] live_body.camera_displacement_guard.stop: " +
+                measurements + " action='stop_stance_mismatched_viewpoint_height'.");
+            return true;
         }
 
         private void CaptureScopedFirstPersonPose(InteractionAnimationManifest.BodyManifest body)
@@ -2471,16 +2594,43 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
                 SetBoolIfExists("Walking", walking);
                 SetBoolIfExists("Sprinting", walking && sprinting);
-                SetBoolIfExists("crouching", crouching);
+                SetBoolIfExists(VanillaCrouchingBool, crouching);
                 SetBoolIfExists("Jumping", jumping);
                 if (!walking)
                     SetBoolIfExists("Sideways", false);
 
-                context?.Logger?.LogInfo(
-                    "[RestoreSeam.locomotion] parameters_synced: " +
-                    $"frame={Time.frameCount} handle={context.Handle} phase='{phase}' " +
-                    $"walking={walking} walkingSource='{walkingSource}' " +
-                    $"sprinting={sprinting} crouching={crouching} jumping={jumping}.");
+                // Vanilla enters crouch through the "startCrouching" trigger PLUS the
+                // "crouching" bool (decompiled PlayerControllerB.Crouch_performed). The bool
+                // alone never fires trigger-gated crouch transitions, so mirror the trigger on
+                // the crouch edge. Reset on the stand edge so a latched trigger cannot replay
+                // a crouch entry later.
+                if (hasLastSyncedCrouchState && crouching != lastSyncedCrouchState)
+                {
+                    if (crouching)
+                        FireTriggerIfExists(VanillaStartCrouchingTrigger);
+                    else
+                        ResetTriggerIfExists(VanillaStartCrouchingTrigger);
+                }
+                hasLastSyncedCrouchState = true;
+                lastSyncedCrouchState = crouching;
+
+                // Per-tick syncs would otherwise emit this line every frame; log only when a
+                // value changed or the caller is a one-shot seam phase.
+                int syncSignature =
+                    (walking ? 1 : 0) |
+                    (sprinting ? 2 : 0) |
+                    (crouching ? 4 : 0) |
+                    (jumping ? 8 : 0);
+                bool perFramePhase = string.Equals(phase, "tick", StringComparison.Ordinal);
+                if (!perFramePhase || syncSignature != lastLocomotionSyncSignature)
+                {
+                    context?.Logger?.LogInfo(
+                        "[RestoreSeam.locomotion] parameters_synced: " +
+                        $"frame={Time.frameCount} handle={context.Handle} phase='{phase}' " +
+                        $"walking={walking} walkingSource='{walkingSource}' " +
+                        $"sprinting={sprinting} crouching={crouching} jumping={jumping}.");
+                }
+                lastLocomotionSyncSignature = syncSignature;
             }
             catch (Exception exception)
             {
@@ -2647,6 +2797,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             exitStartFullBodyWeight = 0f;
             exitStartFirstPersonWeight = 0f;
             lastMovementValue = -1;
+            hasLastSyncedCrouchState = false;
+            lastSyncedCrouchState = false;
+            lastLocomotionSyncSignature = -1;
             ResetCameraDisplacementGuardState();
             cameraPositionStabilizer = null;
             cameraRotationStabilizer = null;
@@ -2838,6 +2991,25 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 reason = "live_body.snapshot_failed";
                 return false;
             }
+
+            // Record the equip-time stance so Stop can refuse replaying a stale base-layer
+            // state when the player crouched or stood up during the session, and seed the
+            // crouch-edge tracker that fires vanilla's "startCrouching" trigger.
+            bool captureCrouching = false;
+            bool captureCrouchingKnown = false;
+            try
+            {
+                GameNetcodeStuff.PlayerControllerB capturePlayer = context?.Request?.Player;
+                if (capturePlayer != null)
+                {
+                    captureCrouching = capturePlayer.isCrouching;
+                    captureCrouchingKnown = true;
+                }
+            }
+            catch { }
+            snapshot.CapturedCrouching = captureCrouchingKnown ? captureCrouching : (bool?)null;
+            hasLastSyncedCrouchState = captureCrouchingKnown;
+            lastSyncedCrouchState = captureCrouching;
 
             RuntimeAnimatorController controllerToApply = controller;
             if (!TryApplyClipPackOverride(body, controller, ref controllerToApply, out reason))
@@ -3169,11 +3341,41 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 }
 
                 bool scopedRestore = body != null && body.scopedFirstPersonTransformRestore;
+
+                // Equip-while-crouched then stand (or the reverse) makes the captured base-layer
+                // state a stale stance pose. Skip its forced replay and let the locomotion
+                // parameters — synced to CURRENT player state before the replay evaluates —
+                // drive layer 0 instead. Other layers restore as usual.
+                bool stanceMismatch = false;
+                if (snapshot.CapturedCrouching.HasValue)
+                {
+                    bool currentCrouching = snapshot.CapturedCrouching.Value;
+                    try
+                    {
+                        GameNetcodeStuff.PlayerControllerB player = context?.Request?.Player;
+                        if (player != null)
+                            currentCrouching = player.isCrouching;
+                    }
+                    catch { }
+                    stanceMismatch = currentCrouching != snapshot.CapturedCrouching.Value;
+                }
+                if (stanceMismatch)
+                {
+                    context?.Logger?.LogInfo(
+                        "[RestoreSeam.locomotion] stance_changed_during_session: " +
+                        $"frame={Time.frameCount} handle={context.Handle} " +
+                        $"capturedCrouching={snapshot.CapturedCrouching} " +
+                        "action='skip_base_layer_state_replay'.");
+                }
+
                 bool restored = snapshot.Restore(
                     bodyAnimator,
                     appliedController,
                     rebindAnimator: !scopedRestore,
-                    restoreMode: restoreStateMode);
+                    restoreMode: restoreStateMode,
+                    syncParametersBeforeStateReplay:
+                        () => SyncVanillaLocomotionParameters("stop_pre_state_replay"),
+                    restoreBaseLayerState: !stanceMismatch);
                 return restored ? "restored" : "controller_changed_externally";
             }
             catch (Exception exception)
@@ -4505,6 +4707,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 bodyAnimator.SetTrigger(parameterName);
             }
             catch { }
+        }
+
+        private void ResetTriggerIfExists(string parameterName)
+        {
+            if (string.IsNullOrWhiteSpace(parameterName) || !HasParameter(parameterName, AnimatorControllerParameterType.Trigger))
+                return;
+
+            try { bodyAnimator.ResetTrigger(parameterName); } catch { }
         }
 
         private bool HasParameter(string parameterName, AnimatorControllerParameterType parameterType)
