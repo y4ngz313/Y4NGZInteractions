@@ -188,6 +188,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Authoring
         [Serializable]
         public sealed class PropManifest
         {
+            [NonSerialized]
+            internal bool useLegacyRecursiveAttachBoneLookup;
+
             /// <summary>Gets or sets whether the prop is used.</summary>
             public bool enabled;
 

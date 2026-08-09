@@ -1,9 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using Xunit;
 using Y4NGZInteractions.InteractionAnimationApi;
 using Y4NGZInteractions.InteractionAnimationApi.Authoring;
+using Y4NGZInteractions.InteractionAnimationApi.Presenters;
 
 namespace Y4NGZInteractions.Tests;
 
@@ -54,6 +56,94 @@ public sealed class ManifestAndRegistryTests : IDisposable
         Assert.Contains(report.Issues, issue =>
             issue.Code == "manifest_schema_1_migrated" &&
             issue.Severity == InteractionAnimationValidationSeverity.Warning);
+    }
+
+    [Fact]
+    public void SchemaOnePropAttachmentResolvesLegacyLeafBoneRecursively()
+    {
+        const string json = """
+        {
+          "schemaVersion": 1,
+          "interactionId": "legacy-prop",
+          "body": {
+            "enabled": true,
+            "prop": {
+              "enabled": true,
+              "prefabName": "LegacyProp",
+              "attachBone": "hand.R"
+            }
+          }
+        }
+        """;
+
+        InteractionAnimationValidationReport report =
+            InteractionAnimationManifestValidator.Parse(
+                json, out InteractionAnimationManifest manifest);
+        TestTransform root = CreateNestedHandRig(out TestTransform hand);
+
+        TestTransform resolved = PropAttachBoneResolver.Resolve(
+            root,
+            manifest.body.prop,
+            (candidate, path) => candidate.FindExactPath(path),
+            (candidate, name) => candidate.FindRecursiveName(name));
+
+        Assert.True(report.IsValid);
+        Assert.True(manifest.body.prop.useLegacyRecursiveAttachBoneLookup);
+        Assert.Null(root.FindExactPath("hand.R"));
+        Assert.Same(hand, resolved);
+    }
+
+    [Fact]
+    public void SchemaTwoPropAttachmentPreservesExactPathLookup()
+    {
+        const string json = """
+        {
+          "schemaVersion": 2,
+          "interactionId": "exact-prop",
+          "body": {
+            "enabled": true,
+            "prop": {
+              "enabled": true,
+              "prefabAssetName": "ExactProp",
+              "attachBonePath": "metarig/spine.003/shoulder.R/arm.R_upper/arm.R_lower/hand.R"
+            }
+          }
+        }
+        """;
+
+        InteractionAnimationValidationReport report =
+            InteractionAnimationManifestValidator.Parse(
+                json, out InteractionAnimationManifest manifest);
+        TestTransform root = CreateNestedHandRig(out TestTransform hand);
+        bool usedRecursiveLookup = false;
+
+        TestTransform resolved = PropAttachBoneResolver.Resolve(
+            root,
+            manifest.body.prop,
+            (candidate, path) => candidate.FindExactPath(path),
+            (candidate, name) =>
+            {
+                usedRecursiveLookup = true;
+                return candidate.FindRecursiveName(name);
+            });
+
+        Assert.True(report.IsValid);
+        Assert.False(manifest.body.prop.useLegacyRecursiveAttachBoneLookup);
+        Assert.False(usedRecursiveLookup);
+        Assert.Same(hand, resolved);
+    }
+
+    private static TestTransform CreateNestedHandRig(out TestTransform hand)
+    {
+        var root = new TestTransform("root");
+        hand = root
+            .Add("metarig")
+            .Add("spine.003")
+            .Add("shoulder.R")
+            .Add("arm.R_upper")
+            .Add("arm.R_lower")
+            .Add("hand.R");
+        return root;
     }
 
     [Fact]
@@ -264,5 +354,50 @@ public sealed class ManifestAndRegistryTests : IDisposable
           }
         }
         """;
+    }
+
+    private sealed class TestTransform
+    {
+        private readonly List<TestTransform> children = new();
+
+        internal TestTransform(string name)
+        {
+            Name = name;
+        }
+
+        private string Name { get; }
+
+        internal TestTransform Add(string name)
+        {
+            var child = new TestTransform(name);
+            children.Add(child);
+            return child;
+        }
+
+        internal TestTransform FindExactPath(string path)
+        {
+            TestTransform current = this;
+            foreach (string segment in path.Split('/'))
+            {
+                current = current.children.FirstOrDefault(
+                    child => string.Equals(child.Name, segment, StringComparison.Ordinal));
+                if (current == null)
+                    return null;
+            }
+            return current;
+        }
+
+        internal TestTransform FindRecursiveName(string name)
+        {
+            if (string.Equals(Name, name, StringComparison.Ordinal))
+                return this;
+            foreach (TestTransform child in children)
+            {
+                TestTransform found = child.FindRecursiveName(name);
+                if (found != null)
+                    return found;
+            }
+            return null;
+        }
     }
 }

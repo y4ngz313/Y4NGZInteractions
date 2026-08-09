@@ -80,6 +80,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Authoring
                     },
                     prop = new InteractionAnimationManifest.PropManifest
                     {
+                        useLegacyRecursiveAttachBoneLookup = true,
                         enabled = oldProp.enabled,
                         prefabAssetName = oldProp.prefabName ?? string.Empty,
                         attachBonePath = oldProp.attachBone ?? string.Empty,

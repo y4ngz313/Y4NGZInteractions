@@ -268,7 +268,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 Transform root = context.Request.Player.playerModelArmsMetarig != null
                     ? context.Request.Player.playerModelArmsMetarig
                     : context.Request.Player.playerBodyAnimator.transform;
-                if (root == null || root.Find(body.prop.attachBonePath) == null)
+                if (ResolvePropAttachBone(root, body.prop) == null)
                 {
                     reason = "live_body.prop_attach_bone_missing:" +
                         body.prop.attachBonePath;
@@ -2888,7 +2888,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             Transform searchRoot = armsMetarig != null
                 ? armsMetarig
                 : (bodyAnimator != null ? bodyAnimator.transform : null);
-            Transform attachBone = searchRoot.Find(prop.attachBonePath);
+            Transform attachBone = ResolvePropAttachBone(searchRoot, prop);
             if (attachBone == null)
             {
                 context?.Logger?.LogWarning(
@@ -4622,6 +4622,17 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             }
 
             return null;
+        }
+
+        private static Transform ResolvePropAttachBone(
+            Transform root,
+            InteractionAnimationManifest.PropManifest prop)
+        {
+            return PropAttachBoneResolver.Resolve(
+                root,
+                prop,
+                (candidate, path) => candidate.Find(path),
+                FindChildRecursive);
         }
 
         private static bool IsRigBuilderComponent(Component component)
