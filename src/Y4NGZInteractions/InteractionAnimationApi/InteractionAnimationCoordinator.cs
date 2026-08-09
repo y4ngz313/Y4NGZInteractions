@@ -5,57 +5,71 @@ using BepInEx.Logging;
 using GameNetcodeStuff;
 using UnityEngine;
 using Y4NGZInteractions.InteractionAnimationApi.Authoring;
-using Y4NGZInteractions.InteractionAnimationApi.Backends;
 using Y4NGZInteractions.InteractionAnimationApi.Presenters;
 
 namespace Y4NGZInteractions.InteractionAnimationApi
 {
+    internal delegate bool InteractionAnimationBodyOwnershipValidator(
+        PlayerControllerB player,
+        InteractionAnimationPresentationKind presentationKind,
+        InteractionAnimationHandle[] conflicts,
+        out string reason);
+
     internal sealed class InteractionAnimationCoordinator
     {
         private readonly ManualLogSource logger;
-        private readonly Dictionary<string, InteractionAnimationPackDefinition> packs =
-            new Dictionary<string, InteractionAnimationPackDefinition>(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<InteractionAnimationHandle, InteractionAnimationSession> activeSessions =
-            new Dictionary<InteractionAnimationHandle, InteractionAnimationSession>();
+        private readonly Func<InteractionAnimationPresentationKind, IInteractionPresenter>
+            presenterFactory;
+        private readonly Func<PlayerControllerB> localPlayerResolver;
+        private readonly InteractionAnimationBodyOwnershipValidator
+            bodyOwnershipValidator;
+        private readonly Func<InteractionAnimationContext, IInteractionPresenter,
+            InteractionAnimationSession> sessionFactory;
+        private readonly Dictionary<string, RegisteredPackSnapshot> packs =
+            new Dictionary<string, RegisteredPackSnapshot>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<InteractionAnimationHandle, InteractionAnimationSession>
+            activeSessions =
+                new Dictionary<InteractionAnimationHandle, InteractionAnimationSession>();
+        private readonly InteractionAnimationResourceLeaseRegistry leases =
+            new InteractionAnimationResourceLeaseRegistry();
 
-        internal InteractionAnimationCoordinator(ManualLogSource logger)
+        internal InteractionAnimationCoordinator(
+            ManualLogSource logger,
+            Func<InteractionAnimationPresentationKind, IInteractionPresenter> presenterFactory = null,
+            Func<PlayerControllerB> localPlayerResolver = null,
+            InteractionAnimationBodyOwnershipValidator bodyOwnershipValidator = null,
+            Func<InteractionAnimationContext, IInteractionPresenter,
+                InteractionAnimationSession> sessionFactory = null)
         {
             this.logger = logger;
+            this.presenterFactory = presenterFactory ?? CreateDefaultPresenter;
+            this.localPlayerResolver = localPlayerResolver ?? ResolveDefaultLocalPlayer;
+            this.bodyOwnershipValidator =
+                bodyOwnershipValidator ?? TryValidateBodyAnimatorOwnership;
+            this.sessionFactory = sessionFactory ??
+                ((context, presenter) => new InteractionAnimationSession(context, presenter));
         }
 
         internal bool TryRegisterInteractionPack(
             InteractionAnimationPackDefinition pack,
             out string reason)
         {
-            reason = string.Empty;
-
-            InteractionAnimationValidationResult validation = ValidatePack(pack);
-            if (!validation.IsValid)
-            {
-                reason = validation.Reason;
+            InteractionAnimationValidationReport report =
+                InteractionAnimationPackValidator.Validate(pack, out RegisteredPackSnapshot snapshot);
+            reason = InteractionAnimationManifestValidator.GetFirstErrorCode(report);
+            if (!report.IsValid)
                 return false;
-            }
-
-            if (!InteractionAnimationAssetPathResolver.TryNormalizeAssetRoot(
-                    pack.AssetRootPath,
-                    out string normalizedAssetRoot,
-                    out reason))
-            {
-                return false;
-            }
-
-            pack.AssetRootPath = normalizedAssetRoot;
-
-            if (packs.ContainsKey(pack.PackId))
+            if (packs.ContainsKey(snapshot.PackId))
             {
                 reason = "pack_already_registered";
                 return false;
             }
 
-            packs.Add(pack.PackId, pack);
+            packs.Add(snapshot.PackId, snapshot);
             logger?.LogInfo(
                 "[LCInteractionAnimationAPI] pack.registered: " +
-                $"pack='{pack.PackId}' interactions={pack.Interactions.Length}.");
+                $"pack='{snapshot.PackId}' version='{snapshot.Version}' " +
+                $"interactions={snapshot.InteractionCount}.");
             return true;
         }
 
@@ -65,79 +79,79 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             out string reason)
         {
             handle = InteractionAnimationHandle.Empty;
-            reason = string.Empty;
+            if (!TryResolveRequest(request, out RegisteredPackSnapshot pack,
+                    out RegisteredInteractionSnapshot definition, out reason))
+                return false;
 
-            InteractionAnimationValidationResult requestValidation = ValidateRequest(request);
-            if (!requestValidation.IsValid)
+            PlayerControllerB localPlayer = ResolveLocalPlayer();
+            bool isLocal = ReferenceEquals(request.Player, localPlayer);
+            if (definition.PresentationKind ==
+                    InteractionAnimationPresentationKind.DedicatedLocalViewmodel && !isLocal)
             {
-                reason = requestValidation.Reason;
+                reason = "dedicated_viewmodel_requires_local_player";
                 return false;
             }
 
-            if (!packs.TryGetValue(request.PackId, out InteractionAnimationPackDefinition pack))
-            {
-                reason = "pack_not_registered";
+            InteractionAnimationResourceClaim[] claims = BuildClaims(
+                request.Player, definition.PresentationKind, isLocal);
+            if (!leases.TryPlanAcquisition(
+                    claims, request.ConflictPolicy,
+                    out InteractionAnimationHandle[] conflicts, out reason))
                 return false;
-            }
-
-            InteractionAnimationDefinition definition = pack.Interactions.FirstOrDefault(
-                interaction => string.Equals(
-                    interaction.InteractionId,
-                    request.InteractionId,
-                    StringComparison.OrdinalIgnoreCase));
-
-            if (definition == null)
-            {
-                reason = "interaction_not_registered";
+            if (!bodyOwnershipValidator(
+                    request.Player, definition.PresentationKind, conflicts, out reason))
                 return false;
-            }
-
-            if (!InteractionAnimationManifest.TryParse(
-                    definition.ManifestJson,
-                    out InteractionAnimationManifest manifest,
-                    out reason))
-            {
-                return false;
-            }
-
-            InteractionAnimationValidationResult manifestValidation =
-                manifest.Validate(definition.InteractionId, definition.PresentationKind);
-            if (!manifestValidation.IsValid)
-            {
-                reason = manifestValidation.Reason;
-                return false;
-            }
-
-            if (definition.PresentationKind == InteractionAnimationPresentationKind.BodyWorld &&
-                !TryAcquireBodyWorldAnimator(request.Player, request, out reason))
-            {
-                return false;
-            }
 
             handle = InteractionAnimationHandle.NewHandle();
+            var requestSnapshot = new InteractionAnimationRequest
+            {
+                Player = request.Player,
+                PackId = pack.PackId,
+                InteractionId = definition.InteractionId,
+                ConflictPolicy = request.ConflictPolicy
+            };
             var context = new InteractionAnimationContext(
                 handle,
-                request,
-                definition,
-                manifest,
+                requestSnapshot,
+                definition.CreateDefinition(),
+                definition.Manifest,
                 pack.AssetRootPath,
                 logger);
-            var session = new InteractionAnimationSession(
-                handle,
-                context,
-                CreateBackend(definition),
-                CreatePresenter(definition));
-
-            if (!session.TryStart(out reason))
+            IInteractionPresenter presenter = CreatePresenter(definition.PresentationKind);
+            InteractionAnimationSession session = sessionFactory(context, presenter);
+            if (!session.TryPreflight(out reason))
             {
                 handle = InteractionAnimationHandle.Empty;
                 return false;
             }
 
+            InteractionAnimationSession[] suspended = Array.Empty<InteractionAnimationSession>();
+            if (conflicts.Length > 0 &&
+                !TrySuspendConflicts(conflicts, out suspended, out reason))
+            {
+                handle = InteractionAnimationHandle.Empty;
+                return false;
+            }
+
+            if (!leases.TryAcquire(handle, claims, out reason))
+            {
+                ResumeConflicts(suspended);
+                handle = InteractionAnimationHandle.Empty;
+                return false;
+            }
+            if (!session.TryStart(out reason))
+            {
+                leases.Release(handle);
+                ResumeConflicts(suspended);
+                handle = InteractionAnimationHandle.Empty;
+                return false;
+            }
+
+            FinalizeConflicts(suspended);
             activeSessions.Add(handle, session);
             logger?.LogInfo(
                 "[LCInteractionAnimationAPI] interaction.started: " +
-                $"handle={handle} pack='{request.PackId}' interaction='{request.InteractionId}' " +
+                $"handle={handle} pack='{pack.PackId}' interaction='{definition.InteractionId}' " +
                 $"presentation='{definition.PresentationKind}'.");
             return true;
         }
@@ -153,129 +167,94 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 reason = "preload_invalid_identity";
                 return false;
             }
-
-            if (!packs.TryGetValue(packId, out InteractionAnimationPackDefinition pack))
+            if (!packs.TryGetValue(packId, out RegisteredPackSnapshot pack))
             {
                 reason = "pack_not_registered";
                 return false;
             }
-
-            InteractionAnimationDefinition definition = pack.Interactions.FirstOrDefault(
-                interaction => string.Equals(
-                    interaction.InteractionId,
-                    interactionId,
-                    StringComparison.OrdinalIgnoreCase));
-            if (definition == null)
+            if (!pack.TryGetInteraction(interactionId, out RegisteredInteractionSnapshot definition))
             {
                 reason = "interaction_not_registered";
                 return false;
             }
 
-            if (!InteractionAnimationManifest.TryParse(
-                    definition.ManifestJson,
-                    out InteractionAnimationManifest manifest,
-                    out reason))
-                return false;
-
-            InteractionAnimationValidationResult validation =
-                manifest.Validate(definition.InteractionId, definition.PresentationKind);
-            if (!validation.IsValid)
-            {
-                reason = validation.Reason;
-                return false;
-            }
-
             if (definition.PresentationKind == InteractionAnimationPresentationKind.BodyWorld)
-            {
                 return LiveBodyAnimatorPresenter.TryPreloadBundles(
-                    manifest,
-                    pack.AssetRootPath,
-                    logger,
-                    out reason);
-            }
-
+                    definition.Manifest, pack.AssetRootPath, logger, out reason);
             return LocalViewmodelPresenter.TryBeginPreload(
-                manifest,
-                pack.AssetRootPath,
-                logger,
-                out reason);
+                definition.Manifest, pack.AssetRootPath, logger, out reason);
         }
 
         internal bool TryStopInteraction(
             InteractionAnimationHandle handle,
-            InteractionAnimationStopReason stopReason)
+            InteractionAnimationStopReason reason)
         {
             if (!activeSessions.TryGetValue(handle, out InteractionAnimationSession session))
                 return false;
+            if (!session.TryStopAndRestore(reason))
+                return false;
 
-            session.Stop(stopReason);
+            leases.Release(handle);
             activeSessions.Remove(handle);
+            NotifyEnded(session, reason);
             logger?.LogInfo(
                 "[LCInteractionAnimationAPI] interaction.stopped: " +
-                $"handle={handle} reason='{stopReason}'.");
+                $"handle={handle} reason='{reason}'.");
             return true;
         }
 
         internal bool IsInteractionActive(InteractionAnimationHandle handle)
         {
-            return activeSessions.ContainsKey(handle);
+            return activeSessions.TryGetValue(handle, out InteractionAnimationSession session) &&
+                session.IsActive;
         }
 
-        internal bool IsPlayerInteractionActive(PlayerControllerB player)
-        {
-            return player != null && activeSessions.Values.Any(
-                session => session.PresentationKind == InteractionAnimationPresentationKind.BodyWorld &&
-                           ReferenceEquals(session.Player, player));
-        }
-
-        internal bool TryStopPlayerInteractions(
+        internal bool TryGetActiveInteraction(
             PlayerControllerB player,
-            InteractionAnimationStopReason stopReason)
+            InteractionAnimationPresentationKind presentationKind,
+            out InteractionAnimationHandle handle)
         {
-            if (player == null)
+            handle = InteractionAnimationHandle.Empty;
+            if (ReferenceEquals(player, null))
                 return false;
-
-            InteractionAnimationHandle[] handles = activeSessions
-                .Where(pair =>
-                    pair.Value.PresentationKind == InteractionAnimationPresentationKind.BodyWorld &&
-                    ReferenceEquals(pair.Value.Player, player))
-                .Select(pair => pair.Key)
-                .ToArray();
-
-            bool stoppedAny = false;
-            for (int i = 0; i < handles.Length; i++)
-                stoppedAny |= TryStopInteraction(handles[i], stopReason);
-            return stoppedAny;
+            foreach (KeyValuePair<InteractionAnimationHandle, InteractionAnimationSession> pair
+                     in activeSessions)
+            {
+                if (pair.Value.IsActive && ReferenceEquals(pair.Value.Player, player) &&
+                    pair.Value.PresentationKind == presentationKind)
+                {
+                    handle = pair.Key;
+                    return true;
+                }
+            }
+            return false;
         }
 
         internal bool TrySetInteractionAnimatorParameter(
             InteractionAnimationHandle handle,
             string parameterName,
-            UnityEngine.AnimatorControllerParameterType parameterType,
+            AnimatorControllerParameterType parameterType,
             float value)
         {
             return activeSessions.TryGetValue(handle, out InteractionAnimationSession session) &&
-                   session.TrySetAnimatorParameter(parameterName, parameterType, value);
+                session.TrySetAnimatorParameter(parameterName, parameterType, value);
         }
 
-        /// <summary>
-        /// Toggle-style graceful exit: the presenter plays its put-away animation, then the
-        /// session auto-stops after the presenter-reported exit duration.
-        /// </summary>
-        internal bool TryBeginInteractionExit(InteractionAnimationHandle handle, out string reason)
+        internal bool TryBeginInteractionExit(
+            InteractionAnimationHandle handle,
+            out string reason)
         {
             reason = string.Empty;
-
-            if (!activeSessions.TryGetValue(handle, out InteractionAnimationSession session))
+            if (!activeSessions.TryGetValue(handle, out InteractionAnimationSession session) ||
+                !session.IsActive)
             {
                 reason = "interaction_not_active";
                 return false;
             }
-
-            float exitSeconds = session.BeginExit();
+            float seconds = session.BeginExit();
             logger?.LogInfo(
                 "[LCInteractionAnimationAPI] interaction.exit_begun: " +
-                $"handle={handle} exitSeconds={exitSeconds:0.###}.");
+                $"handle={handle} exitSeconds={seconds:0.###}.");
             return true;
         }
 
@@ -283,57 +262,82 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         {
             if (activeSessions.Count == 0)
                 return;
-
-            var naturallyEnded = new List<InteractionAnimationHandle>();
-            var interrupted = new List<InteractionAnimationHandle>();
-            foreach (KeyValuePair<InteractionAnimationHandle, InteractionAnimationSession> pair in activeSessions)
+            InteractionAnimationHandle[] handles = activeSessions.Keys.ToArray();
+            for (int i = 0; i < handles.Length; i++)
             {
-                pair.Value.Tick(deltaTime);
-                if (pair.Value.WantsAutoStop)
-                    interrupted.Add(pair.Key);
-                else if (pair.Value.IsPastExpectedDuration)
-                    naturallyEnded.Add(pair.Key);
+                if (!activeSessions.TryGetValue(handles[i], out InteractionAnimationSession session))
+                    continue;
+                InteractionAnimationStopReason? reason = session.Tick(deltaTime);
+                if (reason.HasValue)
+                    TryStopInteraction(handles[i], reason.Value);
             }
-
-            for (int i = 0; i < interrupted.Count; i++)
-                TryStopInteraction(interrupted[i], InteractionAnimationStopReason.Interrupted);
-
-            for (int i = 0; i < naturallyEnded.Count; i++)
-                TryStopInteraction(naturallyEnded[i], InteractionAnimationStopReason.NaturalEnd);
         }
 
         internal void Shutdown()
         {
-            var handles = activeSessions.Keys.ToArray();
+            InteractionAnimationHandle[] handles = activeSessions.Keys.ToArray();
             for (int i = 0; i < handles.Length; i++)
                 TryStopInteraction(handles[i], InteractionAnimationStopReason.Shutdown);
-
+            leases.Clear();
             packs.Clear();
         }
 
-        private bool TryAcquireBodyWorldAnimator(
-            PlayerControllerB player,
+        private bool TryResolveRequest(
             InteractionAnimationRequest request,
+            out RegisteredPackSnapshot pack,
+            out RegisteredInteractionSnapshot interaction,
+            out string reason)
+        {
+            pack = null;
+            interaction = null;
+            reason = string.Empty;
+            if (request == null)
+            {
+                reason = "request_null";
+                return false;
+            }
+            if (ReferenceEquals(request.Player, null))
+            {
+                reason = "request_player_missing";
+                return false;
+            }
+            if (string.IsNullOrWhiteSpace(request.PackId))
+            {
+                reason = "request_pack_id_empty";
+                return false;
+            }
+            if (string.IsNullOrWhiteSpace(request.InteractionId))
+            {
+                reason = "request_interaction_id_empty";
+                return false;
+            }
+            if (!Enum.IsDefined(typeof(InteractionAnimationConflictPolicy), request.ConflictPolicy))
+            {
+                reason = "request_conflict_policy_invalid";
+                return false;
+            }
+            if (!packs.TryGetValue(request.PackId, out pack))
+            {
+                reason = "pack_not_registered";
+                return false;
+            }
+            if (!pack.TryGetInteraction(request.InteractionId, out interaction))
+            {
+                reason = "interaction_not_registered";
+                return false;
+            }
+            return true;
+        }
+
+        private bool TryValidateBodyAnimatorOwnership(
+            PlayerControllerB player,
+            InteractionAnimationPresentationKind presentationKind,
+            InteractionAnimationHandle[] conflicts,
             out string reason)
         {
             reason = string.Empty;
-
-            InteractionAnimationHandle[] conflicts = activeSessions
-                .Where(pair =>
-                    pair.Value.PresentationKind == InteractionAnimationPresentationKind.BodyWorld &&
-                    ReferenceEquals(pair.Value.Player, player))
-                .Select(pair => pair.Key)
-                .ToArray();
-
-            for (int i = 0; i < conflicts.Length; i++)
-            {
-                logger?.LogInfo(
-                    "[LCInteractionAnimationAPI] interaction.preempted: " +
-                    $"handle={conflicts[i]} nextPack='{request.PackId}' " +
-                    $"nextInteraction='{request.InteractionId}'.");
-                TryStopInteraction(conflicts[i], InteractionAnimationStopReason.Interrupted);
-            }
-
+            if (presentationKind != InteractionAnimationPresentationKind.BodyWorld)
+                return true;
             Animator animator = player != null ? player.playerBodyAnimator : null;
             if (animator == null)
             {
@@ -341,215 +345,181 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 return false;
             }
 
-            RuntimeAnimatorController expectedVanilla = ResolveExpectedVanillaController(player);
-            if (expectedVanilla != null && animator.runtimeAnimatorController != expectedVanilla)
+            for (int i = 0; i < conflicts.Length; i++)
             {
-                reason = "player_animator_owned_externally";
-                logger?.LogWarning(
-                    "[LCInteractionAnimationAPI] interaction.start_rejected: " +
-                    $"reason='{reason}' pack='{request.PackId}' interaction='{request.InteractionId}' " +
-                    $"currentController='{animator.runtimeAnimatorController?.name ?? "<none>"}' " +
-                    $"expectedController='{expectedVanilla.name}'.");
-                return false;
+                if (activeSessions.TryGetValue(conflicts[i], out InteractionAnimationSession session) &&
+                    ReferenceEquals(session.Player, player) &&
+                    session.PresentationKind == InteractionAnimationPresentationKind.BodyWorld &&
+                    session.HasResourceOwnership)
+                    return true;
             }
 
+            RuntimeAnimatorController expected = ResolveExpectedVanillaController(player);
+            if (expected == null)
+            {
+                reason = "expected_player_animator_controller_missing";
+                return false;
+            }
+            if (animator.runtimeAnimatorController != expected)
+            {
+                reason = "player_animator_owned_externally";
+                return false;
+            }
             return true;
         }
 
-        private static RuntimeAnimatorController ResolveExpectedVanillaController(PlayerControllerB player)
+        private bool TrySuspendConflicts(
+            InteractionAnimationHandle[] handles,
+            out InteractionAnimationSession[] suspended,
+            out string reason)
+        {
+            reason = string.Empty;
+            var sessions = new List<InteractionAnimationSession>();
+            for (int i = 0; i < handles.Length; i++)
+            {
+                if (!activeSessions.TryGetValue(handles[i], out InteractionAnimationSession session))
+                    continue;
+                if (!session.TrySuspend(out reason))
+                {
+                    for (int resumeIndex = 0; resumeIndex < sessions.Count; resumeIndex++)
+                    {
+                        InteractionAnimationSession suspendedSession = sessions[resumeIndex];
+                        if (suspendedSession.TryResume(out _))
+                            continue;
+                        leases.Release(suspendedSession.Handle);
+                        activeSessions.Remove(suspendedSession.Handle);
+                        suspendedSession.TryStopAndRestore(
+                            InteractionAnimationStopReason.PresenterFailure);
+                        NotifyEnded(suspendedSession,
+                            InteractionAnimationStopReason.PresenterFailure);
+                    }
+                    if (session.IsEnded)
+                    {
+                        leases.Release(session.Handle);
+                        activeSessions.Remove(session.Handle);
+                        NotifyEnded(session, InteractionAnimationStopReason.PresenterFailure);
+                    }
+                    suspended = Array.Empty<InteractionAnimationSession>();
+                    return false;
+                }
+                sessions.Add(session);
+            }
+            suspended = sessions.ToArray();
+            for (int i = 0; i < suspended.Length; i++)
+                leases.Release(suspended[i].Handle);
+            return true;
+        }
+
+        private void ResumeConflicts(InteractionAnimationSession[] sessions)
+        {
+            for (int i = 0; i < sessions.Length; i++)
+            {
+                InteractionAnimationSession session = sessions[i];
+                bool isLocal = ReferenceEquals(session.Player, ResolveLocalPlayer());
+                InteractionAnimationResourceClaim[] claims = BuildClaims(
+                    session.Player, session.PresentationKind, isLocal);
+                if (leases.TryAcquire(session.Handle, claims, out _) &&
+                    session.TryResume(out _))
+                    continue;
+
+                leases.Release(session.Handle);
+                activeSessions.Remove(session.Handle);
+                session.TryStopAndRestore(InteractionAnimationStopReason.PresenterFailure);
+                NotifyEnded(session, InteractionAnimationStopReason.PresenterFailure);
+            }
+        }
+
+        private void FinalizeConflicts(InteractionAnimationSession[] sessions)
+        {
+            for (int i = 0; i < sessions.Length; i++)
+            {
+                InteractionAnimationSession session = sessions[i];
+                activeSessions.Remove(session.Handle);
+                if (session.TryFinalizeSuspended())
+                    NotifyEnded(session, InteractionAnimationStopReason.Interrupted);
+            }
+        }
+
+        private void NotifyEnded(
+            InteractionAnimationSession session,
+            InteractionAnimationStopReason reason)
+        {
+            LCInteractionAnimationAPI.NotifyInteractionEnded(session.CreateEndedEvent(reason));
+        }
+
+        private static InteractionAnimationResourceClaim[] BuildClaims(
+            PlayerControllerB player,
+            InteractionAnimationPresentationKind presentationKind,
+            bool isLocal)
+        {
+            if (presentationKind == InteractionAnimationPresentationKind.DedicatedLocalViewmodel)
+            {
+                return new[]
+                {
+                    new InteractionAnimationResourceClaim(
+                        InteractionAnimationResourceKind.LocalCameraAndArms, player)
+                };
+            }
+            if (isLocal)
+            {
+                return new[]
+                {
+                    new InteractionAnimationResourceClaim(
+                        InteractionAnimationResourceKind.BodyAnimator, player),
+                    new InteractionAnimationResourceClaim(
+                        InteractionAnimationResourceKind.LocalCameraAndArms, player)
+                };
+            }
+            return new[]
+            {
+                new InteractionAnimationResourceClaim(
+                    InteractionAnimationResourceKind.BodyAnimator, player)
+            };
+        }
+
+        private PlayerControllerB ResolveLocalPlayer()
+        {
+            return localPlayerResolver();
+        }
+
+        private static PlayerControllerB ResolveDefaultLocalPlayer()
+        {
+            try
+            {
+                return GameNetworkManager.Instance?.localPlayerController ??
+                    StartOfRound.Instance?.localPlayerController;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private RuntimeAnimatorController ResolveExpectedVanillaController(
+            PlayerControllerB player)
         {
             StartOfRound round = StartOfRound.Instance;
-            if (round == null || player == null)
+            if (round == null || ReferenceEquals(player, null))
                 return null;
-
-            PlayerControllerB localPlayer = GameNetworkManager.Instance != null
-                ? GameNetworkManager.Instance.localPlayerController
-                : null;
-            return ReferenceEquals(player, localPlayer)
+            return ReferenceEquals(player, ResolveLocalPlayer())
                 ? round.localClientAnimatorController
                 : round.otherClientsAnimatorController;
         }
 
-        private static InteractionAnimationValidationResult ValidatePack(
-            InteractionAnimationPackDefinition pack)
+        private IInteractionPresenter CreatePresenter(
+            InteractionAnimationPresentationKind presentationKind)
         {
-            if (pack == null)
-                return InteractionAnimationValidationResult.Invalid("pack_null");
-
-            if (string.IsNullOrWhiteSpace(pack.PackId))
-                return InteractionAnimationValidationResult.Invalid("pack_id_empty");
-
-            if (pack.PackId.Trim() != pack.PackId)
-                return InteractionAnimationValidationResult.Invalid("pack_id_has_outer_whitespace");
-
-            if (pack.Interactions == null || pack.Interactions.Length == 0)
-                return InteractionAnimationValidationResult.Invalid("pack_interactions_empty");
-
-            var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            for (int i = 0; i < pack.Interactions.Length; i++)
-            {
-                InteractionAnimationDefinition interaction = pack.Interactions[i];
-                if (interaction == null)
-                    return InteractionAnimationValidationResult.Invalid("interaction_null");
-
-                if (string.IsNullOrWhiteSpace(interaction.InteractionId))
-                    return InteractionAnimationValidationResult.Invalid("interaction_id_empty");
-
-                if (interaction.InteractionId.Trim() != interaction.InteractionId)
-                    return InteractionAnimationValidationResult.Invalid("interaction_id_has_outer_whitespace");
-
-                if (!ids.Add(interaction.InteractionId))
-                    return InteractionAnimationValidationResult.Invalid("interaction_id_duplicate");
-            }
-
-            return InteractionAnimationValidationResult.Valid();
+            return presenterFactory(presentationKind);
         }
 
-        private static InteractionAnimationValidationResult ValidateRequest(
-            InteractionAnimationRequest request)
+        private static IInteractionPresenter CreateDefaultPresenter(
+            InteractionAnimationPresentationKind presentationKind)
         {
-            if (request == null)
-                return InteractionAnimationValidationResult.Invalid("request_null");
-
-            if (request.Player == null)
-                return InteractionAnimationValidationResult.Invalid("request_player_missing");
-
-            if (string.IsNullOrWhiteSpace(request.PackId))
-                return InteractionAnimationValidationResult.Invalid("request_pack_id_empty");
-
-            if (string.IsNullOrWhiteSpace(request.InteractionId))
-                return InteractionAnimationValidationResult.Invalid("request_interaction_id_empty");
-
-            return InteractionAnimationValidationResult.Valid();
-        }
-
-        private static IInteractionAnimationBackend CreateBackend(InteractionAnimationDefinition definition)
-        {
-            return null;
-        }
-
-        private static IInteractionPresenter CreatePresenter(InteractionAnimationDefinition definition)
-        {
-            if (definition.PresentationKind == InteractionAnimationPresentationKind.DedicatedLocalViewmodel ||
-                definition.PresentationKind == InteractionAnimationPresentationKind.Hybrid)
-            {
+            if (presentationKind == InteractionAnimationPresentationKind.DedicatedLocalViewmodel)
                 return new LocalViewmodelPresenter();
-            }
-
-            if (definition.PresentationKind == InteractionAnimationPresentationKind.BodyWorld)
-            {
+            if (presentationKind == InteractionAnimationPresentationKind.BodyWorld)
                 return new LiveBodyAnimatorPresenter();
-            }
-
             return null;
-        }
-
-        private sealed class InteractionAnimationSession
-        {
-            private readonly InteractionAnimationHandle handle;
-            private readonly InteractionAnimationContext context;
-            private readonly IInteractionAnimationBackend backend;
-            private readonly IInteractionPresenter presenter;
-            private DateTime startedUtc;
-            private DateTime exitStopAtUtc = DateTime.MaxValue;
-            private bool active;
-
-            internal InteractionAnimationSession(
-                InteractionAnimationHandle handle,
-                InteractionAnimationContext context,
-                IInteractionAnimationBackend backend,
-                IInteractionPresenter presenter)
-            {
-                this.handle = handle;
-                this.context = context;
-                this.backend = backend;
-                this.presenter = presenter;
-            }
-
-            internal bool IsPastExpectedDuration
-            {
-                get
-                {
-                    if (!active)
-                        return false;
-
-                    if (DateTime.UtcNow >= exitStopAtUtc)
-                        return true;
-
-                    float duration = context.Definition.ExpectedDurationSeconds > 0f
-                        ? context.Definition.ExpectedDurationSeconds
-                        : context.Manifest.durationSeconds;
-                    return duration > 0f && (DateTime.UtcNow - startedUtc).TotalSeconds >= duration;
-                }
-            }
-
-            internal float BeginExit()
-            {
-                if (!active)
-                    return 0f;
-
-                float exitSeconds = presenter != null ? Math.Max(0f, presenter.BeginExit()) : 0f;
-                exitStopAtUtc = DateTime.UtcNow.AddSeconds(exitSeconds);
-                return exitSeconds;
-            }
-
-            internal bool WantsAutoStop => active && presenter != null && presenter.ShouldAutoStop;
-
-            internal PlayerControllerB Player => context?.Request?.Player;
-
-            internal InteractionAnimationPresentationKind PresentationKind =>
-                context.Definition.PresentationKind;
-
-            internal bool TrySetAnimatorParameter(
-                string parameterName,
-                UnityEngine.AnimatorControllerParameterType parameterType,
-                float value)
-            {
-                return active && presenter != null &&
-                       presenter.TrySetAnimatorParameter(parameterName, parameterType, value);
-            }
-
-            internal bool TryStart(out string reason)
-            {
-                reason = string.Empty;
-
-                if (backend != null && !backend.TryStart(context, out reason))
-                    return false;
-
-                if (presenter != null && !presenter.TryStart(context, out reason))
-                {
-                    backend?.Stop(InteractionAnimationStopReason.Failed);
-                    return false;
-                }
-
-                startedUtc = DateTime.UtcNow;
-                active = true;
-                return true;
-            }
-
-            internal void Tick(float deltaTime)
-            {
-                if (!active)
-                    return;
-
-                backend?.Tick(deltaTime);
-                presenter?.Tick(deltaTime);
-            }
-
-            internal void Stop(InteractionAnimationStopReason stopReason)
-            {
-                if (!active)
-                    return;
-
-                presenter?.Stop(stopReason);
-                backend?.Stop(stopReason);
-                active = false;
-            }
-
-            public override string ToString()
-            {
-                return handle.ToString();
-            }
         }
     }
 }

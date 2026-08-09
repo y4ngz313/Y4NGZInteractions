@@ -3,258 +3,239 @@ using UnityEngine;
 
 namespace Y4NGZInteractions.InteractionAnimationApi.Authoring
 {
+    /// <summary>A JSON-friendly vector used by manifests and authoring tools.</summary>
+    [Serializable]
+    public struct InteractionAnimationVector3
+    {
+        /// <summary>Creates a vector from three components.</summary>
+        /// <param name="x">X component.</param>
+        /// <param name="y">Y component.</param>
+        /// <param name="z">Z component.</param>
+        public InteractionAnimationVector3(float x, float y, float z)
+        {
+            this.x = x;
+            this.y = y;
+            this.z = z;
+        }
+
+        /// <summary>Gets or sets the X component.</summary>
+        public float x;
+
+        /// <summary>Gets or sets the Y component.</summary>
+        public float y;
+
+        /// <summary>Gets or sets the Z component.</summary>
+        public float z;
+
+        internal Vector3 ToUnityVector3()
+        {
+            return new Vector3(x, y, z);
+        }
+    }
+
+    /// <summary>Schema-2 authoring contract for one interaction payload.</summary>
     [Serializable]
     public sealed class InteractionAnimationManifest
     {
-        public int schemaVersion = 1;
+        /// <summary>Gets or sets the manifest schema. New manifests must use 2.</summary>
+        public int schemaVersion = 2;
+
+        /// <summary>Gets or sets the interaction id matched to its registration.</summary>
         public string interactionId = string.Empty;
-        public string displayName = string.Empty;
+
+        /// <summary>Gets or sets the natural lifetime in seconds. Zero means no timed end.</summary>
         public float durationSeconds;
-        public float frameRate;
+
+        /// <summary>Gets or sets an optional internal AssetBundle name used for cache lookup.</summary>
         public string bundleInternalName = string.Empty;
+
+        /// <summary>Gets or sets the dedicated local-viewmodel contract.</summary>
         public LocalViewmodelManifest localViewmodel = new LocalViewmodelManifest();
-        public SocketManifest sockets = new SocketManifest();
-        public string[] liveRenderersToHide = Array.Empty<string>();
+
+        /// <summary>Gets or sets the body-world contract.</summary>
         public BodyManifest body = new BodyManifest();
-        public ValidationManifest validation = new ValidationManifest();
-        // Opt-in exemptions declared by the authoring consumer. The user config lists
-        // (see InteractionAnimationApiPlugin) remain honored on top of these flags, so an
-        // operator can exempt an interaction the manifest did not.
-        public bool exemptFromCameraDisplacementGuard;
-        public bool exemptFromSpecialAnimationAutoStop;
 
-        public static bool TryParse(string json, out InteractionAnimationManifest manifest, out string reason)
+        /// <summary>Strictly parses schema 2 or migrates legacy schema 1.</summary>
+        /// <param name="json">Manifest JSON.</param>
+        /// <param name="manifest">The normalized schema-2 manifest when parsing succeeds.</param>
+        /// <param name="reason">The first stable error code when parsing fails.</param>
+        /// <returns>True when the JSON can be normalized.</returns>
+        public static bool TryParse(
+            string json,
+            out InteractionAnimationManifest manifest,
+            out string reason)
         {
-            manifest = null;
-            reason = string.Empty;
-
-            if (string.IsNullOrWhiteSpace(json))
-            {
-                reason = "manifest_json_empty";
-                return false;
-            }
-
-            try
-            {
-                manifest = JsonUtility.FromJson<InteractionAnimationManifest>(json);
-            }
-            catch (Exception exception)
-            {
-                reason = "manifest_json_invalid:" + exception.Message;
-                return false;
-            }
-
-            if (manifest == null)
-            {
-                reason = "manifest_json_returned_null";
-                return false;
-            }
-
-            return true;
+            InteractionAnimationValidationReport report =
+                InteractionAnimationManifestValidator.Parse(json, out manifest);
+            reason = InteractionAnimationManifestValidator.GetFirstErrorCode(report);
+            return report.IsValid;
         }
 
-        public InteractionAnimationValidationResult Validate(
-            string expectedInteractionId,
-            InteractionAnimationPresentationKind presentationKind)
-        {
-            if (schemaVersion <= 0)
-                return InteractionAnimationValidationResult.Invalid("manifest_schema_version_invalid");
-
-            if (string.IsNullOrWhiteSpace(interactionId))
-                return InteractionAnimationValidationResult.Invalid("manifest_interaction_id_empty");
-
-            if (!string.IsNullOrWhiteSpace(expectedInteractionId) &&
-                !string.Equals(interactionId, expectedInteractionId, StringComparison.OrdinalIgnoreCase))
-            {
-                return InteractionAnimationValidationResult.Invalid("manifest_interaction_id_mismatch");
-            }
-
-            if (durationSeconds < 0f || float.IsNaN(durationSeconds) || float.IsInfinity(durationSeconds))
-                return InteractionAnimationValidationResult.Invalid("manifest_duration_invalid");
-
-            if (presentationKind == InteractionAnimationPresentationKind.DedicatedLocalViewmodel ||
-                presentationKind == InteractionAnimationPresentationKind.Hybrid)
-            {
-                if (localViewmodel == null)
-                    return InteractionAnimationValidationResult.Invalid("manifest_viewmodel_missing");
-
-                if (string.IsNullOrWhiteSpace(localViewmodel.prefab))
-                    return InteractionAnimationValidationResult.Invalid("manifest_viewmodel_prefab_empty");
-
-                if (string.IsNullOrWhiteSpace(localViewmodel.bundleFileName))
-                    return InteractionAnimationValidationResult.Invalid("manifest_viewmodel_bundle_file_empty");
-
-                if (string.IsNullOrWhiteSpace(localViewmodel.controller))
-                    return InteractionAnimationValidationResult.Invalid("manifest_viewmodel_controller_empty");
-
-                if (string.IsNullOrWhiteSpace(localViewmodel.cameraAnchor))
-                    return InteractionAnimationValidationResult.Invalid("manifest_viewmodel_camera_anchor_empty");
-
-                if (sockets == null)
-                    return InteractionAnimationValidationResult.Invalid("manifest_sockets_missing");
-
-                if (string.IsNullOrWhiteSpace(sockets.leftHand))
-                    return InteractionAnimationValidationResult.Invalid("manifest_socket_left_hand_empty");
-
-                if (string.IsNullOrWhiteSpace(sockets.rightHand))
-                    return InteractionAnimationValidationResult.Invalid("manifest_socket_right_hand_empty");
-
-                if (string.IsNullOrWhiteSpace(sockets.ResolvedProp))
-                    return InteractionAnimationValidationResult.Invalid("manifest_socket_prop_empty");
-            }
-
-            if (presentationKind == InteractionAnimationPresentationKind.BodyWorld)
-            {
-                if (body == null || !body.enabled)
-                    return InteractionAnimationValidationResult.Invalid("manifest_body_disabled");
-
-                if (string.IsNullOrWhiteSpace(body.bundleFileName))
-                    return InteractionAnimationValidationResult.Invalid("manifest_body_bundle_file_empty");
-
-                if (string.IsNullOrWhiteSpace(body.controller))
-                    return InteractionAnimationValidationResult.Invalid("manifest_body_controller_empty");
-            }
-
-            return InteractionAnimationValidationResult.Valid();
-        }
-
+        /// <summary>Schema-2 settings for a consumer-authored camera-local rig.</summary>
         [Serializable]
         public sealed class LocalViewmodelManifest
         {
+            /// <summary>Gets or sets the bundle path relative to the pack asset root.</summary>
             public string bundleFileName = string.Empty;
-            public string prefab = string.Empty;
-            public string controller = string.Empty;
+
+            /// <summary>Gets or sets the prefab asset name inside the bundle.</summary>
+            public string prefabAssetName = string.Empty;
+
+            /// <summary>Gets or sets the controller asset name inside the bundle.</summary>
+            public string controllerAssetName = string.Empty;
+
+            /// <summary>Gets or sets an optional Bool parameter driven for the session lifetime.</summary>
             public string activeBool = string.Empty;
+
+            /// <summary>Gets or sets an optional Trigger fired at entry.</summary>
             public string enterTrigger = string.Empty;
+
+            /// <summary>Gets or sets an optional Trigger fired by graceful exit.</summary>
             public string exitTrigger = string.Empty;
+
+            /// <summary>Gets or sets the graceful-exit delay before restoration.</summary>
             public float exitSeconds;
-            public string root = string.Empty;
-            public string cameraAnchor = "Y4NGZ_ViewmodelCameraAnchor";
-            public Vector3 cameraLocalPosition = new Vector3(0f, -0.42f, 0.95f);
-            public Vector3 cameraLocalEuler = Vector3.zero;
-            public Vector3 localScale = new Vector3(0.55f, 0.55f, 0.55f);
-            public string runtimeMaterialMode = string.Empty;
-            public string[] hideSourceRenderers = Array.Empty<string>();
-            public string[] visibleRenderers = Array.Empty<string>();
+
+            /// <summary>Gets or sets the prefab-relative transform path aligned to the camera.</summary>
+            public string cameraAnchorPath = string.Empty;
+
+            /// <summary>Gets or sets the camera-local anchor target position.</summary>
+            public InteractionAnimationVector3 cameraLocalPosition;
+
+            /// <summary>Gets or sets the camera-local anchor target Euler rotation.</summary>
+            public InteractionAnimationVector3 cameraLocalEuler;
+
+            /// <summary>Gets or sets the instantiated prefab scale.</summary>
+            public InteractionAnimationVector3 localScale =
+                new InteractionAnimationVector3(1f, 1f, 1f);
+
+            /// <summary>Gets or sets whether the local player's vanilla arms are hidden.</summary>
+            public bool hideVanillaFirstPersonArms;
+
+            /// <summary>Gets or sets prefab-relative renderer paths disabled after instantiation.</summary>
+            public string[] prefabRenderersToHide = Array.Empty<string>();
+
+            /// <summary>Gets or sets prefab-relative renderer paths explicitly enabled.</summary>
+            public string[] prefabRenderersToShow = Array.Empty<string>();
         }
 
-        [Serializable]
-        public sealed class SocketManifest
-        {
-            public string leftHand = string.Empty;
-            public string rightHand = string.Empty;
-            // Renderer name of the held prop carried by the viewmodel prefab.
-            public string prop = string.Empty;
-            // Deprecated alias for <see cref="prop"/>, kept so manifests authored against the
-            // original schema keep loading. Read through <see cref="ResolvedProp"/>, never directly.
-            public string tablet = string.Empty;
-
-            /// <summary>
-            /// The prop renderer name: <see cref="prop"/> when authored, otherwise the legacy
-            /// <see cref="tablet"/> alias.
-            /// </summary>
-            public string ResolvedProp =>
-                !string.IsNullOrWhiteSpace(prop) ? prop : tablet;
-        }
-
+        /// <summary>Schema-2 settings for a Lethal Company player-body controller.</summary>
         [Serializable]
         public sealed class BodyManifest
         {
+            /// <summary>Gets or sets whether the body-world payload is authored.</summary>
             public bool enabled;
+
+            /// <summary>Gets or sets the controller bundle path relative to the pack asset root.</summary>
             public string bundleFileName = string.Empty;
-            public string controller = string.Empty;
+
+            /// <summary>Gets or sets the controller asset name inside the bundle.</summary>
             public string controllerAssetName = string.Empty;
-            public string clip = string.Empty;
+
+            /// <summary>Gets or sets an optional Bool parameter driven for the session lifetime.</summary>
             public string activeBool = string.Empty;
+
+            /// <summary>Gets or sets an optional Trigger fired at entry.</summary>
             public string enterTrigger = string.Empty;
+
+            /// <summary>Gets or sets an optional Trigger fired by graceful exit.</summary>
             public string exitTrigger = string.Empty;
+
+            /// <summary>Gets or sets the full-body animator layer name.</summary>
             public string fullBodyLayer = string.Empty;
+
+            /// <summary>Gets or sets the first-person-arms animator layer name.</summary>
             public string firstPersonArmsLayer = string.Empty;
+
+            /// <summary>Gets or sets the starting layer weight.</summary>
             public float startLayerWeight = 1f;
+
+            /// <summary>Gets or sets the layer ramp duration.</summary>
             public float layerWeightRampSeconds;
-            // Fixed weight for the full-body layer, overriding the ramped weight. Negative
-            // (default, absent in older manifests) = legacy: ramp both layers together.
-            // Weapons set 0: vanilla's own two-handed hold animates the body — a constant
-            // override pose at high weight fights locomotion (walk-skew, frozen torso).
+
+            /// <summary>Gets or sets a fixed full-body weight; negative uses the shared ramp.</summary>
             public float fullBodyLayerWeight = -1f;
-            // Opt-in experimental teardown for first-person-only interactions. Captures the
-            // local arms-metarig descendants before the controller swap, restores them before
-            // rebuilding the RigBuilder, and skips the broad whole-player Animator.Rebind.
-            // Absent/false preserves the existing behavior unchanged.
-            public bool scopedFirstPersonTransformRestore;
-            // Opt-in position stabilization for short local interactions whose temporary body
-            // controller animates a parent of gameplayCamera. The presenter preserves mouse-look
-            // rotation while pinning only the camera's player-local position. False keeps the
-            // existing behavior unchanged.
-            public bool stabilizeLocalCameraPosition;
-            // Opt-in for a local session that IS the third-person presentation: a camera mod,
-            // not this session, owns the local camera. Every local camera behavior below
-            // assumes local means first person and that the camera must stay at rest — the
-            // displacement guard, both live stabilizers, the session-entry drift heal and the
-            // stop-time rotation/position snaps. The external presenter also owns local visor
-            // placement and visibility, so seam visor restore and hard visor glue stand down.
-            // All of these behaviors stand down for this session only.
-            // Absent/false preserves the existing behavior unchanged.
-            public bool localCameraOwnedExternally;
-            // Optional layer fades used by short one-shots whose endpoint geometry crosses the
-            // camera near plane. Zero preserves existing behavior.
+
+            /// <summary>Gets or sets an optional entry fade duration.</summary>
             public float enterLayerFadeSeconds;
+
+            /// <summary>Gets or sets an optional natural-end fade duration.</summary>
             public float naturalEndLayerFadeSeconds;
-            public bool suppressRigBuilders = true;
-            public string diagnosticVanillaOverrideClip = string.Empty;
-            public string overrideSlotPrefix = string.Empty;
-            // Toggle lifecycle: seconds the exit (put-away) animation needs after the exit
-            // trigger fires, before the controller is restored. 0 = restore immediately.
+
+            /// <summary>Gets or sets whether Animation Rigging graphs are rebuilt for playback.</summary>
+            public bool rebuildRigBuilders;
+
+            /// <summary>Gets or sets the graceful-exit delay before restoration.</summary>
             public float exitSeconds;
-            // Animator Int parameter the presenter drives every frame from the player's
-            // movement state (0 = idle, 1 = walking, 2 = sprinting). Empty = disabled.
+
+            /// <summary>Gets or sets an optional Int parameter driven from movement state.</summary>
             public string movementParameter = string.Empty;
+
+            /// <summary>Gets or sets whether the API preserves the local gameplay camera.</summary>
+            public bool preserveGameplayCamera = true;
+
+            /// <summary>Gets or sets whether vanilla special animations stop the session.</summary>
+            public bool stopOnVanillaSpecialAnimation = true;
+
+            /// <summary>Gets or sets optional runtime clip overrides.</summary>
             public ClipPackManifest clipPack = new ClipPackManifest();
+
+            /// <summary>Gets or sets an optional hand-attached prop.</summary>
             public PropManifest prop = new PropManifest();
         }
 
+        /// <summary>Describes an optional prop attached to a body-world bone.</summary>
         [Serializable]
         public sealed class PropManifest
         {
+            /// <summary>Gets or sets whether the prop is used.</summary>
             public bool enabled;
-            // Prefab asset name inside the clip-pack bundle.
-            public string prefabName = string.Empty;
-            // Bone (searched under the arms metarig) the prop is parented to.
-            public string attachBone = string.Empty;
-            // Local pose under the attach bone; produced by the baker's prop-attachment
-            // report (anatomical basis-corrected source pose).
-            public Vector3 localPosition = Vector3.zero;
-            public Vector3 localEulerAngles = Vector3.zero;
+
+            /// <summary>Gets or sets the prefab asset name in the controller or clip-pack bundle.</summary>
+            public string prefabAssetName = string.Empty;
+
+            /// <summary>Gets or sets the arms-metarig-relative attachment-bone path.</summary>
+            public string attachBonePath = string.Empty;
+
+            /// <summary>Gets or sets the local attachment position.</summary>
+            public InteractionAnimationVector3 localPosition;
+
+            /// <summary>Gets or sets the local attachment Euler rotation.</summary>
+            public InteractionAnimationVector3 localEulerAngles;
+
+            /// <summary>Gets or sets the uniform local scale.</summary>
             public float localScale = 1f;
-            // Optional one-shot release point. Values <= 0 preserve the prop for the
-            // interaction lifetime; positive values destroy the held instance at this time.
+
+            /// <summary>Gets or sets an optional release time; zero retains the prop until stop.</summary>
             public float releaseSeconds;
         }
 
+        /// <summary>Describes an optional bundle of animation clips.</summary>
         [Serializable]
         public sealed class ClipPackManifest
         {
+            /// <summary>Gets or sets whether clip overrides are used.</summary>
             public bool enabled;
+
+            /// <summary>Gets or sets the clip bundle path relative to the pack asset root.</summary>
             public string bundleFileName = string.Empty;
+
+            /// <summary>Gets or sets an optional internal AssetBundle name for cache lookup.</summary>
             public string bundleInternalName = string.Empty;
+
+            /// <summary>Gets or sets controller-slot to clip-asset mappings.</summary>
             public ClipOverrideManifest[] overrides = Array.Empty<ClipOverrideManifest>();
         }
 
+        /// <summary>Maps one shell-controller clip slot to a clip asset.</summary>
         [Serializable]
         public sealed class ClipOverrideManifest
         {
+            /// <summary>Gets or sets the shell-controller clip slot.</summary>
             public string slot = string.Empty;
-            public string clip = string.Empty;
-        }
 
-        [Serializable]
-        public sealed class ValidationManifest
-        {
-            public string generatedAt = string.Empty;
-            public string previewPixelCoverage = string.Empty;
-            public string meshTransfer = string.Empty;
-            public string socketNames = string.Empty;
-            public string cameraBounds = string.Empty;
+            /// <summary>Gets or sets the replacement clip asset name.</summary>
+            public string clip = string.Empty;
         }
     }
 }

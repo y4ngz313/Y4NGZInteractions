@@ -1,16 +1,16 @@
 <Project Sdk="Microsoft.NET.Sdk">
-
   <PropertyGroup>
     <TargetFramework>netstandard2.1</TargetFramework>
     <AssemblyName>Y4NGZInteractions</AssemblyName>
     <RootNamespace>Y4NGZInteractions</RootNamespace>
-    <Description>Consumer-agnostic interaction animation API for Lethal Company</Description>
-    <Version>0.3.0</Version>
+    <Description>Consumer-agnostic local animation presentation API for Lethal Company</Description>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <NoWarn>$(NoWarn);CS0436</NoWarn>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <EnableProfileDeploy Condition="'$(EnableProfileDeploy)' == ''">false</EnableProfileDeploy>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -19,33 +19,40 @@
       https://nuget.bepinex.dev/v3/index.json;
       https://nuget.samboy.dev/v3/index.json
     </RestoreAdditionalProjectSources>
-    <GameManagedDir Condition="'$(GameManagedDir)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Lethal Company\Lethal Company_Data\Managed</GameManagedDir>
-    <!-- Local playtest profile. Derived from the environment so no machine-specific path is
-         checked in; override TestProfileRoot (or DeployTarget) to deploy elsewhere. -->
-    <TestProfileRoot Condition="'$(TestProfileRoot)' == ''">$(AppData)\com.kesomannen.gale\lethal-company\profiles\terrible</TestProfileRoot>
-    <BepInExPlugins Condition="'$(BepInExPlugins)' == ''">$(TestProfileRoot)\BepInEx\plugins</BepInExPlugins>
-    <DeployTarget Condition="'$(DeployTarget)' == ''">$(BepInExPlugins)\y4ngz-Y4NGZInteractions</DeployTarget>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="BepInEx.Analyzers" Version="1.*" PrivateAssets="all" />
     <PackageReference Include="BepInEx.Core" Version="5.4.21" PrivateAssets="all" />
-    <PackageReference Include="BepInEx.PluginInfoProps" Version="2.*" PrivateAssets="all" />
     <PackageReference Include="HarmonyX" Version="2.10.2" PrivateAssets="all" />
     <PackageReference Include="LethalCompany.GameLibs.Steam" Version="81.0.5-ngd.0" Publicize="true" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.CodeAnalysis.PublicApiAnalyzers" Version="3.3.4" PrivateAssets="all" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" PrivateAssets="all" />
     <PackageReference Include="UnityEngine.Modules" Version="2022.3.62" IncludeAssets="compile" PrivateAssets="all" />
   </ItemGroup>
 
   <ItemGroup>
-    <Reference Include="Unity.InputSystem">
-      <HintPath>$(GameManagedDir)\Unity.InputSystem.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
+    <AdditionalFiles Include="PublicAPI.Shipped.txt" />
+    <AdditionalFiles Include="PublicAPI.Unshipped.txt" />
   </ItemGroup>
 
-  <!-- This project builds the consumer-agnostic API assembly only. Animation payloads
-       (bundles, manifests, finger poses) ship with the consuming mods, not from here. -->
-  <Target Name="DeployToGaleProfile" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">
+  <Target Name="GenerateBuildVersionSource" BeforeTargets="CoreCompile">
+    <PropertyGroup>
+      <GeneratedBuildVersionFile>$(IntermediateOutputPath)Y4NGZInteractions.BuildVersion.g.cs</GeneratedBuildVersionFile>
+    </PropertyGroup>
+    <WriteLinesToFile
+      File="$(GeneratedBuildVersionFile)"
+      Lines="namespace Y4NGZInteractions { internal static class BuildVersion { internal const string Value = &quot;$(Y4NGZInteractionsVersion)&quot;%3B } }"
+      Overwrite="true"
+      Encoding="UTF-8" />
+    <ItemGroup>
+      <Compile Include="$(GeneratedBuildVersionFile)" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="DeployToProfile"
+          AfterTargets="Build"
+          Condition="'$(Configuration)' == 'Release' and '$(EnableProfileDeploy)' == 'true' and '$(DeployTarget)' != ''">
     <MakeDir Directories="$(DeployTarget)" />
     <ItemGroup>
       <Y4NGZInteractionsDeployFiles Include="$(TargetPath)" />
@@ -54,5 +61,4 @@
     <Copy SourceFiles="@(Y4NGZInteractionsDeployFiles)" DestinationFolder="$(DeployTarget)" SkipUnchangedFiles="false" />
     <Message Text="Deployed Y4NGZInteractions to: $(DeployTarget)" Importance="high" />
   </Target>
-
 </Project>

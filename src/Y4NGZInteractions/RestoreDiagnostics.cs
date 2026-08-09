@@ -9,14 +9,12 @@ using BepInEx.Logging;
 using GameNetcodeStuff;
 using HarmonyLib;
 using UnityEngine;
-using UnityEngine.InputSystem;
 
 namespace Y4NGZInteractions.InteractionAnimationApi
 {
     internal static class InteractionAnimationApiRestoreDiagnostics
     {
-        internal const string ConfigSection = "Interaction Animation API V2 Restore Diagnostics";
-        internal const string DefaultRigDiffHotkey = "NumpadMultiply";
+        internal const string ConfigSection = "Interaction Animation API Restore Diagnostics";
         internal const string DefaultRestoreStateMode = "fresh";
 
         private const int RestoreHistoryFrames = 3;
@@ -48,7 +46,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         private static ConfigEntry<bool> enableRestoreSeamFrameLogger;
         private static ConfigEntry<bool> enableRestoreRigStateLogger;
         private static ConfigEntry<bool> enablePristineRigDiffProbe;
-        private static ConfigEntry<string> rigDiffHotkey;
         private static ConfigEntry<bool> restoreRigControlPose;
         private static ConfigEntry<bool> restorePristineRigControlPose;
         private static ConfigEntry<bool> restoreThirdPersonRigControlPose;
@@ -117,8 +114,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         private static bool prepareForLiveBodyStartUninitializedLogged;
         private static bool remoteRigProbeSessionBeginUninitializedLogged;
         private static bool playerAwakeCaptureUninitializedLogged;
-        private static Key parsedRigDiffHotkey = Key.NumpadMultiply;
-        private static bool parsedRigDiffHotkeyValid = true;
         private static int nextRemoteRigProbeId;
 
         internal static bool RestoreScopedCameraPinEnabled =>
@@ -148,7 +143,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             initialized && ReadEnabled(hardVisorGlueDuringSession, true);
 
         internal static bool ExternalCameraPresentationLoggerEnabled =>
-            initialized && ReadEnabled(enableExternalCameraPresentationLogger, true);
+            initialized && ReadEnabled(enableExternalCameraPresentationLogger, false);
 
         internal static bool RestoreSeamFrameLoggerEnabled =>
             initialized && ReadEnabled(enableRestoreSeamFrameLogger, false);
@@ -219,18 +214,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 enableRestoreRigStateLogger = config.Bind(
                     ConfigSection,
                     "Enable Restore Rig State Logger",
-                    true,
+                    false,
                     "Logs every player-body animator layer immediately before and after the restore RigBuilder.Build loop, then after the final Animator.Update(0).");
                 enablePristineRigDiffProbe = config.Bind(
                     ConfigSection,
                     "Enable Pristine Rig Diff Probe",
-                    true,
-                    "Captures the local first-person RigArms controls before any V2 live-body animation and enables hotkey and post-restore diffs.");
-                rigDiffHotkey = config.Bind(
-                    ConfigSection,
-                    "Rig Diff Hotkey",
-                    DefaultRigDiffHotkey,
-                    "Unity Input System Key enum name used to dump current first-person rig controls against the pristine capture. Default NumpadMultiply is the keypad multiply key.");
+                    false,
+                    "Captures the local first-person RigArms controls before any API live-body animation and enables automatic post-restore diffs.");
                 restoreRigControlPose = config.Bind(
                     ConfigSection,
                     "Restore Rig Control Pose",
@@ -300,17 +290,17 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     ConfigSection,
                     "Hard Visor Glue During Session",
                     true,
-                    "When enabled, first-person local live-body sessions re-glue the helmet visor to its camera target point (position AND rotation, no lerp) just before each render. Vanilla's own glue smooths rotation at 53 deg/s, which lags fast scripted or animated camera moves and sweeps the mask edge into frame; this keeps the mask stable so consumers no longer need to hide it. A visor a consumer has parked away from the camera is left alone, and localCameraOwnedExternally sessions always stand down because their camera owner also owns visor presentation.");
+                    "When enabled, first-person local live-body sessions re-glue the helmet visor to its camera target point (position AND rotation, no lerp) just before each render. Vanilla's own glue smooths rotation at 53 deg/s, which lags fast scripted or animated camera moves and sweeps the mask edge into frame; this keeps the mask stable so consumers no longer need to hide it. A visor a consumer has parked away from the camera is left alone, and consumer-owned camera sessions always stand down because their camera owner also owns visor presentation.");
                 enableExternalCameraPresentationLogger = config.Bind(
                     ConfigSection,
                     "Enable External Camera Presentation Logger",
-                    true,
-                    "For localCameraOwnedExternally BodyWorld sessions, logs the final pre-render body, first-person-arms, and local-visor renderer state once at entry and again only when render eligibility changes. This low-noise invariant probe identifies local presentation leaks without enabling the full restore seam frame logger.");
+                    false,
+                    "For consumer-owned-camera BodyWorld sessions, logs the final pre-render body, first-person-arms, and local-visor renderer state once at entry and again only when render eligibility changes. This low-noise invariant probe identifies local presentation leaks without enabling the full restore seam frame logger.");
                 enableRemoteRigDiffProbe = config.Bind(
                     ConfigSection,
                     "Enable Remote Rig Diff Probe",
-                    true,
-                    "When enabled, every remote live-body session logs third-person arm-target, leg-target, and shin local TRS at session begin, two LateUpdates after restore, and five seconds after restore. This is a new diagnostics key so existing profiles receive the default-on probe.");
+                    false,
+                    "When enabled, every remote live-body session logs third-person arm-target, leg-target, and shin local TRS at session begin, two LateUpdates after restore, and five seconds after restore. This verbose diagnostics probe remains opt-in.");
                 restoreStateMode = config.Bind(
                     ConfigSection,
                     "Restore State Mode",
@@ -320,9 +310,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                         new AcceptableValueList<string>("fresh", "crossfade", "replay")));
             }
 
-            bool frameLoggerEnabled = ReadEnabled(enableRestoreSeamFrameLogger, true);
-            bool rigStateLoggerEnabled = ReadEnabled(enableRestoreRigStateLogger, true);
-            bool rigDiffEnabled = ReadEnabled(enablePristineRigDiffProbe, true);
+            bool frameLoggerEnabled = ReadEnabled(enableRestoreSeamFrameLogger, false);
+            bool rigStateLoggerEnabled = ReadEnabled(enableRestoreRigStateLogger, false);
+            bool rigDiffEnabled = ReadEnabled(enablePristineRigDiffProbe, false);
             bool rigControlPoseEnabled = ReadEnabled(restoreRigControlPose, true);
             bool pristineRigControlPoseEnabled =
                 ReadEnabled(restorePristineRigControlPose, true);
@@ -343,13 +333,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 ReadEnabled(healCameraDriftAtSessionStart, true);
             bool visorPoseEnabled = ReadEnabled(restoreVisorPose, true);
             bool externalCameraPresentationLoggerEnabled =
-                ReadEnabled(enableExternalCameraPresentationLogger, true);
+                ReadEnabled(enableExternalCameraPresentationLogger, false);
             bool remoteRigDiffProbeEnabled =
-                ReadEnabled(enableRemoteRigDiffProbe, true);
-            if (rigDiffEnabled)
-                ParseRigDiffHotkey();
-            else
-                parsedRigDiffHotkeyValid = false;
+                ReadEnabled(enableRemoteRigDiffProbe, false);
             initialized = true;
 
             if (frameLoggerEnabled)
@@ -391,7 +377,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     $"frameLogger={frameLoggerEnabled} " +
                     $"rigStateLogger={rigStateLoggerEnabled} " +
                     $"rigDiff={rigDiffEnabled} " +
-                    $"rigDiffHotkey='{(rigDiffHotkey != null ? rigDiffHotkey.Value : DefaultRigDiffHotkey)}' " +
                     $"restoreRigControlPose={rigControlPoseEnabled} " +
                     $"restorePristineRigControlPose={pristineRigControlPoseEnabled} " +
                     $"restoreThirdPersonRigControlPose={thirdPersonRigControlPoseEnabled} " +
@@ -443,13 +428,10 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             prepareForLiveBodyStartUninitializedLogged = false;
             remoteRigProbeSessionBeginUninitializedLogged = false;
             playerAwakeCaptureUninitializedLogged = false;
-            parsedRigDiffHotkey = Key.NumpadMultiply;
-            parsedRigDiffHotkeyValid = true;
             nextRemoteRigProbeId = 0;
             enableRestoreSeamFrameLogger = null;
             enableRestoreRigStateLogger = null;
             enablePristineRigDiffProbe = null;
-            rigDiffHotkey = null;
             restoreRigControlPose = null;
             restorePristineRigControlPose = null;
             restoreThirdPersonRigControlPose = null;
@@ -472,7 +454,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
         internal static void BeginCoordinatorLateUpdateTick()
         {
-            if (!initialized || !ReadEnabled(enableRestoreSeamFrameLogger, true))
+            if (!initialized || !ReadEnabled(enableRestoreSeamFrameLogger, false))
                 return;
 
             coordinatorLateUpdateTick = true;
@@ -504,7 +486,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 return;
 
             ObservePlayer(player);
-            if (ReadEnabled(enableRestoreSeamFrameLogger, true))
+            if (ReadEnabled(enableRestoreSeamFrameLogger, false))
             {
                 SubscribeRenderSampler();
                 CacheRenderSessionTransforms(player);
@@ -533,7 +515,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             if (!initialized)
                 return;
 
-            if (!ReadEnabled(enableRestoreSeamFrameLogger, true) ||
+            if (!ReadEnabled(enableRestoreSeamFrameLogger, false) ||
                 !IsLocalPlayer(player))
             {
                 return;
@@ -778,7 +760,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
         internal static void NotifyStop(PlayerControllerB player, GameObject animatedProp)
         {
-            if (!initialized || !ReadEnabled(enableRestoreSeamFrameLogger, true) ||
+            if (!initialized || !ReadEnabled(enableRestoreSeamFrameLogger, false) ||
                 !IsLocalPlayer(player))
             {
                 return;
@@ -823,7 +805,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 return;
 
             NotifyRemoteRigProbeRestoreCompleted(player);
-            if (!ReadEnabled(enablePristineRigDiffProbe, true) ||
+            if (!ReadEnabled(enablePristineRigDiffProbe, false) ||
                 pristineRig == null || !ReferenceEquals(pristineRig.Player, player))
             {
                 return;
@@ -851,7 +833,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             if (player == null || IsLocalPlayer(player))
                 return;
 
-            bool enabled = ReadEnabled(enableRemoteRigDiffProbe, true);
+            bool enabled = ReadEnabled(enableRemoteRigDiffProbe, false);
             string playerDescription = DescribePlayer(player);
             if (!enabled)
             {
@@ -872,7 +854,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             if (player == null || IsLocalPlayer(player))
                 return;
 
-            bool enabled = ReadEnabled(enableRemoteRigDiffProbe, true);
+            bool enabled = ReadEnabled(enableRemoteRigDiffProbe, false);
             string playerDescription = DescribePlayer(player);
             ActiveRemoteRigProbeIds.TryGetValue(player, out int probeId);
             ActiveRemoteRigProbeIds.Remove(player);
@@ -1047,7 +1029,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
         internal static void LogRigAnimatorStates(Animator animator, string checkpoint)
         {
-            if (!initialized || !ReadEnabled(enableRestoreRigStateLogger, true))
+            if (!initialized || !ReadEnabled(enableRestoreRigStateLogger, false))
                 return;
 
             try
@@ -1098,11 +1080,11 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             if (!initialized)
                 return;
 
-            bool frameLoggerEnabled = ReadEnabled(enableRestoreSeamFrameLogger, true);
-            bool rigDiffEnabled = ReadEnabled(enablePristineRigDiffProbe, true);
+            bool frameLoggerEnabled = ReadEnabled(enableRestoreSeamFrameLogger, false);
+            bool rigDiffEnabled = ReadEnabled(enablePristineRigDiffProbe, false);
             bool pristineRigCaptureEnabled = PristineRigCaptureEnabled();
             bool remoteRigDiffProbeEnabled =
-                ReadEnabled(enableRemoteRigDiffProbe, true);
+                ReadEnabled(enableRemoteRigDiffProbe, false);
             if (!frameLoggerEnabled && !pristineRigCaptureEnabled &&
                 !remoteRigDiffProbeEnabled && PendingRemoteRigProbes.Count == 0)
                 return;
@@ -1147,7 +1129,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 if (!rigDiffEnabled)
                     return;
 
-                TickRigDiffHotkey();
 
                 if (pendingRigDiffLateUpdates > 0)
                 {
@@ -1263,7 +1244,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         private static void SubscribeRenderSampler()
         {
             if (renderSamplerSubscribed || !initialized ||
-                !ReadEnabled(enableRestoreSeamFrameLogger, true))
+                !ReadEnabled(enableRestoreSeamFrameLogger, false))
             {
                 return;
             }
@@ -1288,7 +1269,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
             try
             {
-                if (!initialized || !ReadEnabled(enableRestoreSeamFrameLogger, true))
+                if (!initialized || !ReadEnabled(enableRestoreSeamFrameLogger, false))
                 {
                     UnsubscribeRenderSampler();
                     return;
@@ -2194,48 +2175,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             return null;
         }
 
-        private static void ParseRigDiffHotkey()
-        {
-            string configured = rigDiffHotkey != null
-                ? rigDiffHotkey.Value
-                : DefaultRigDiffHotkey;
-            configured = string.IsNullOrWhiteSpace(configured)
-                ? DefaultRigDiffHotkey
-                : configured.Trim().Replace(" ", string.Empty);
-
-            parsedRigDiffHotkeyValid =
-                Enum.TryParse(configured, ignoreCase: true, out parsedRigDiffHotkey) &&
-                parsedRigDiffHotkey != Key.None;
-            if (!parsedRigDiffHotkeyValid)
-            {
-                logger?.LogWarning(
-                    "[RigDiff] hotkey_invalid: " +
-                    $"configured='{configured}' expected UnityEngine.InputSystem.Key enum name.");
-            }
-        }
-
-        private static void TickRigDiffHotkey()
-        {
-            if (!parsedRigDiffHotkeyValid)
-                return;
-
-            Keyboard keyboard = Keyboard.current;
-            if (keyboard == null)
-                return;
-
-            try
-            {
-                if (keyboard[parsedRigDiffHotkey].wasPressedThisFrame)
-                    DumpRigDiff(observedPlayer, "hotkey");
-            }
-            catch (Exception exception)
-            {
-                parsedRigDiffHotkeyValid = false;
-                logger?.LogWarning(
-                    "[RigDiff] hotkey_read_failed: " + exception.Message);
-            }
-        }
-
         private static void DumpRigDiff(PlayerControllerB player, string reason)
         {
             if (pristineRig == null || player == null ||
@@ -2511,7 +2450,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
         private static bool PristineRigCaptureEnabled()
         {
-            return ReadEnabled(enablePristineRigDiffProbe, true) ||
+            return ReadEnabled(enablePristineRigDiffProbe, false) ||
                    ReadEnabled(restorePristineRigControlPose, true);
         }
 

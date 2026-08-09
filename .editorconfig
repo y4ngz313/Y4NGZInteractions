@@ -1,0 +1,8 @@
+root = true
+
+[*.cs]
+dotnet_diagnostic.CS1591.severity = error
+dotnet_diagnostic.RS0016.severity = error
+dotnet_diagnostic.RS0017.severity = error
+dotnet_diagnostic.RS0024.severity = error
+dotnet_diagnostic.RS0025.severity = error

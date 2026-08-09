@@ -7,11 +7,11 @@ using Y4NGZInteractions.InteractionAnimationApi;
 namespace Y4NGZInteractions
 {
     [BepInPlugin(Guid, Name, Version)]
-    public sealed class Plugin : BaseUnityPlugin
+    internal sealed class Plugin : BaseUnityPlugin
     {
-        public const string Guid = "com.y4ngz.interactions";
-        public const string Name = "Y4NGZInteractions";
-        public const string Version = "0.3.0";
+        internal const string Guid = "com.y4ngz.interactions";
+        internal const string Name = "Y4NGZInteractions";
+        internal const string Version = BuildVersion.Value;
 
         internal static Plugin Instance { get; private set; }
         internal static ManualLogSource Log { get; private set; }
@@ -24,16 +24,12 @@ namespace Y4NGZInteractions
             Log = Logger;
             harmony = new Harmony(Guid);
 
-            InitializeModule("Interaction Animation API V2", () => InteractionAnimationApiPlugin.Initialize(Config, Logger));
+            InitializeModule("Interaction Animation API", () => InteractionAnimationApiPlugin.Initialize(Config, Logger));
             InitializeModule(
-                "Interaction Animation API V2 Debug Probe",
-                () =>
-                {
-                    InteractionAnimationApiRestoreDiagnostics.Initialize(Config, Logger);
-                    InteractionAnimationApiDebugProbe.Initialize(Config, Logger);
-                });
+                "Interaction Animation API Restoration",
+                () => InteractionAnimationApiRestoreDiagnostics.Initialize(Config, Logger));
             InitializeModule(
-                "Interaction Animation API V2 Spawn Hooks",
+                "Interaction Animation API Spawn Hooks",
                 () => harmony.PatchAll());
 
             Logger.LogInfo($"{Name} v{Version} loaded.");
@@ -50,14 +46,12 @@ namespace Y4NGZInteractions
             {
                 InteractionAnimationApiRestoreDiagnostics.EndCoordinatorLateUpdateTick();
             }
-            InteractionAnimationApiDebugProbe.Tick();
         }
 
         private void OnDestroy()
         {
             try
             {
-                InteractionAnimationApiDebugProbe.Shutdown();
                 InteractionAnimationApiPlugin.Shutdown();
                 InteractionAnimationApiRestoreDiagnostics.Shutdown();
             }

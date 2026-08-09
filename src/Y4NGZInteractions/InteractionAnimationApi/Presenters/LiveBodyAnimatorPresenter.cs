@@ -101,8 +101,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private float cameraBaselineDisplacementFromVanillaRest;
         private bool cameraGuardPreExistingDisplacementDetected;
         private bool cameraGuardBaselineContaminated;
-        private bool cameraGuardExempt;
-        private bool cameraGuardExemptLogged;
+        private bool consumerOwnedCameraLogged;
         private bool cameraGuardPreExistingSuppressionLogged;
         private bool cameraGuardVanillaRestEnvelopeSuppressionLogged;
         private bool cameraGuardEvaluationUnavailableLogged;
@@ -116,10 +115,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private LocalCameraPositionStabilizer cameraPositionStabilizer;
         private LocalCameraRotationStabilizer cameraRotationStabilizer;
         private bool specialAnimationAutoStopExemptLogged;
-        private bool shouldAutoStop;
+        private InteractionAnimationStopReason? requestedStopReason;
         private bool active;
 
-        public bool ShouldAutoStop => shouldAutoStop;
+        public InteractionAnimationStopReason? RequestedStopReason => requestedStopReason;
+
+        public bool HasResourceOwnership => active && bodyAnimator != null &&
+            appliedController != null &&
+            bodyAnimator.runtimeAnimatorController == appliedController;
 
         private ManualLogSource RestoreLogger =>
             context?.Logger ?? InteractionAnimationApiRestoreDiagnostics.StaticLogger;
@@ -142,11 +145,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             RuntimeAnimatorController controller = null;
             if (!string.IsNullOrWhiteSpace(body.controllerAssetName))
                 controller = controllerBundle.LoadAsset<RuntimeAnimatorController>(body.controllerAssetName);
-            if (controller == null && !string.IsNullOrWhiteSpace(body.controller))
-                controller = controllerBundle.LoadAsset<RuntimeAnimatorController>(body.controller);
             if (controller == null)
             {
-                reason = "live_body.preload_controller_missing:" + body.controller;
+                reason = "live_body.preload_controller_missing:" + body.controllerAssetName;
                 return false;
             }
 
@@ -177,10 +178,10 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             }
 
             if (body.prop != null && body.prop.enabled &&
-                !string.IsNullOrWhiteSpace(body.prop.prefabName) &&
-                propBundle.LoadAsset<GameObject>(body.prop.prefabName) == null)
+                !string.IsNullOrWhiteSpace(body.prop.prefabAssetName) &&
+                propBundle.LoadAsset<GameObject>(body.prop.prefabAssetName) == null)
             {
-                reason = "live_body.preload_prop_missing:" + body.prop.prefabName;
+                reason = "live_body.preload_prop_missing:" + body.prop.prefabAssetName;
                 return false;
             }
 
@@ -239,6 +240,43 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             return true;
         }
 
+        public bool TryPreflight(InteractionAnimationContext context, out string reason)
+        {
+            reason = string.Empty;
+            InteractionAnimationManifest.BodyManifest body = context?.Manifest?.body;
+            if (body == null || !body.enabled)
+            {
+                reason = "missing_body_manifest";
+                return false;
+            }
+            if (context.Request?.Player == null ||
+                context.Request.Player.playerBodyAnimator == null)
+            {
+                reason = "missing_body_animator";
+                return false;
+            }
+            if (!TryPreloadBundles(
+                    context.Manifest,
+                    context.AssetRootPath,
+                    context.Logger,
+                    out reason))
+            {
+                return false;
+            }
+            if (body.prop != null && body.prop.enabled)
+            {
+                Transform root = context.Request.Player.playerModelArmsMetarig != null
+                    ? context.Request.Player.playerModelArmsMetarig
+                    : context.Request.Player.playerBodyAnimator.transform;
+                if (root == null || root.Find(body.prop.attachBonePath) == null)
+                {
+                    reason = "live_body.prop_attach_bone_missing:" +
+                        body.prop.attachBonePath;
+                    return false;
+                }
+            }
+            return true;
+        }
         public bool TryStart(InteractionAnimationContext context, out string reason)
         {
             reason = string.Empty;
@@ -308,7 +346,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             InteractionAnimationApiRestoreDiagnostics.NotifyLiveBodyAnimationRan(
                 context.Request.Player);
-            if (body.suppressRigBuilders)
+            if (!body.rebuildRigBuilders)
                 SuppressLiveRigBuilders();
             else
                 RebuildRigBuilders("start");
@@ -323,7 +361,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             // once more after the graph exists so no rendered frame observes uninitialized IK.
             try { bodyAnimator.Update(0f); } catch { }
             double animatorUpdateMs = LapMilliseconds(seamTiming);
-            if (!body.suppressRigBuilders)
+            if (body.rebuildRigBuilders)
                 EvaluateRigBuilders("start");
             double rigEvaluateMs = LapMilliseconds(seamTiming);
             ApplyLocalCameraPositionStabilizerNow();
@@ -340,7 +378,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             nextDiagnosticsAtSeconds = 0f;
             exitRequested = false;
             lastMovementValue = -1;
-            shouldAutoStop = false;
+            requestedStopReason = null;
             active = true;
             StartTransformChainDiagnostics();
             StartExternalCameraPresentationDiagnostics();
@@ -378,7 +416,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             // same frame and let Stop's expected-controller guard avoid restoring over it.
             if (appliedController != null && bodyAnimator.runtimeAnimatorController != appliedController)
             {
-                shouldAutoStop = true;
+                requestedStopReason = InteractionAnimationStopReason.PresenterFailure;
                 context?.Logger?.LogWarning(
                     "[LCInteractionAnimationAPI] live_body.ownership_lost: " +
                     $"handle={context.Handle} currentController='" +
@@ -387,7 +425,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             }
 
             DetectUnsafeCameraDisplacement();
-            if (shouldAutoStop)
+            if (requestedStopReason.HasValue)
                 return;
 
             elapsedSeconds += deltaTime;
@@ -411,7 +449,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         // interactions may legitimately own the special-animation flag for the whole session.
         private void DetectAutoStopConditions()
         {
-            if (shouldAutoStop)
+            if (requestedStopReason.HasValue)
                 return;
 
             GameNetcodeStuff.PlayerControllerB player = context?.Request?.Player;
@@ -426,7 +464,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     if (player.inSpecialInteractAnimation &&
                         !player.isPlayerDead &&
                         !player.isClimbingLadder &&
-                        InteractionAnimationApiPlugin.IsSpecialAnimationAutoStopExempt(context?.Manifest))
+                        context?.Manifest?.body?.stopOnVanillaSpecialAnimation == false)
                     {
                         if (!specialAnimationAutoStopExemptLogged)
                         {
@@ -440,7 +478,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                         return;
                     }
 
-                    shouldAutoStop = true;
+                    requestedStopReason = player.isPlayerDead
+                        ? InteractionAnimationStopReason.PlayerDied
+                        : InteractionAnimationStopReason.Interrupted;
                     context?.Logger?.LogInfo(
                         "[LCInteractionAnimationAPI] live_body.auto_stop_requested: " +
                         $"handle={context.Handle} specialAnim={player.inSpecialInteractAnimation} " +
@@ -456,13 +496,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         /// behavior in this presenter exists to keep a first-person camera at rest, so all of
         /// them must stand down rather than fight the external owner for the same transform.
         /// </summary>
-        private bool LocalCameraOwnedExternally =>
-            context?.Manifest?.body != null && context.Manifest.body.localCameraOwnedExternally;
+        private bool ConsumerOwnsCameraPresentation =>
+            context?.Manifest?.body?.preserveGameplayCamera == false;
 
         private void CaptureLocalCameraBaseline()
         {
             ResetCameraDisplacementGuardState();
-            if (LocalCameraOwnedExternally)
+            if (ConsumerOwnsCameraPresentation)
             {
                 context?.Logger?.LogInfo(
                     "[LCInteractionAnimationAPI] live_body.camera_displacement_guard.baseline_unavailable: " +
@@ -527,8 +567,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             cameraGuardPreExistingDisplacementDetected =
                 cameraBaselineDisplacementFromVanillaRest > CameraDisplacementGuardThreshold;
             cameraGuardBaselineContaminated = cameraGuardPreExistingDisplacementDetected;
-            cameraGuardExempt = InteractionAnimationApiPlugin.IsCameraDisplacementGuardExempt(
-                context.Manifest);
             bool baselineCrouching = false;
             try { baselineCrouching = player.isCrouching; } catch { }
 
@@ -553,7 +591,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 $"rotation_residue_threshold_degrees={CameraRotationResidueThresholdDegrees:0.###} " +
                 $"pre_existing_rotation_residue={preExistingRotationResidue} " +
                 $"baseline_crouching={baselineCrouching} " +
-                $"exempt={cameraGuardExempt}.");
+                $"consumerOwnsCamera={ConsumerOwnsCameraPresentation}.");
 
             if (cameraGuardPreExistingDisplacementDetected)
             {
@@ -778,8 +816,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             cameraBaselineDisplacementFromVanillaRest = 0f;
             cameraGuardPreExistingDisplacementDetected = false;
             cameraGuardBaselineContaminated = false;
-            cameraGuardExempt = false;
-            cameraGuardExemptLogged = false;
+            consumerOwnedCameraLogged = false;
             cameraGuardPreExistingSuppressionLogged = false;
             cameraGuardVanillaRestEnvelopeSuppressionLogged = false;
             cameraGuardEvaluationUnavailableLogged = false;
@@ -793,9 +830,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             InteractionAnimationManifest.BodyManifest body)
         {
             cameraPositionStabilizer = null;
-            if (body == null || !body.stabilizeLocalCameraPosition ||
+            if (body == null || !body.preserveGameplayCamera ||
                 !hasCameraPlayerLocalBaseline ||
-                LocalCameraOwnedExternally)
+                ConsumerOwnsCameraPresentation)
             {
                 return;
             }
@@ -833,7 +870,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private void StartLocalCameraRotationStabilizer()
         {
             cameraRotationStabilizer = null;
-            if (LocalCameraOwnedExternally)
+            if (ConsumerOwnsCameraPresentation)
             {
                 context?.Logger?.LogInfo(
                     "[LCInteractionAnimationAPI] live_body.camera_rotation_stabilizer_skipped: " +
@@ -943,7 +980,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             if (!InteractionAnimationApiRestoreDiagnostics.RestoreScopedCameraPinEnabled)
                 return;
 
-            if (LocalCameraOwnedExternally)
+            if (ConsumerOwnsCameraPresentation)
             {
                 context?.Logger?.LogInfo(
                     "[RestoreSeam.camerapin] pin_skipped: " +
@@ -1140,7 +1177,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             string phase,
             bool animatorRestored)
         {
-            if (LocalCameraOwnedExternally)
+            if (ConsumerOwnsCameraPresentation)
             {
                 context?.Logger?.LogInfo(
                     "[RestoreSeam.camerarotation] reapply_skipped: " +
@@ -1311,7 +1348,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
         private VisorPoseSnapshot CaptureSeamVisorPose(string phase)
         {
-            if (LocalCameraOwnedExternally)
+            if (ConsumerOwnsCameraPresentation)
             {
                 context?.Logger?.LogInfo(
                     "[RestoreSeam.visor] capture_skipped: " +
@@ -1476,7 +1513,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             string phase,
             bool animatorRestored)
         {
-            if (LocalCameraOwnedExternally)
+            if (ConsumerOwnsCameraPresentation)
             {
                 context?.Logger?.LogInfo(
                     "[RestoreSeam.visor] reapply_skipped: " +
@@ -1772,7 +1809,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
         private void DetectUnsafeCameraDisplacement()
         {
-            if (!hasCameraPlayerLocalBaseline || shouldAutoStop)
+            if (!hasCameraPlayerLocalBaseline || requestedStopReason.HasValue)
                 return;
 
             GameNetcodeStuff.PlayerControllerB player = context?.Request?.Player;
@@ -1823,11 +1860,11 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 $"pre_existing_displacement={cameraGuardPreExistingDisplacementDetected} " +
                 $"baseline_contaminated={cameraGuardBaselineContaminated}";
 
-            if (cameraGuardExempt)
+            if (ConsumerOwnsCameraPresentation)
             {
-                if (!cameraGuardExemptLogged)
+                if (!consumerOwnedCameraLogged)
                 {
-                    cameraGuardExemptLogged = true;
+                    consumerOwnedCameraLogged = true;
                     context?.Logger?.LogInfo(
                         "[LCInteractionAnimationAPI] live_body.camera_displacement_guard.guard_exempt: " +
                         BuildMeasurements() + " action='continue_exempt'.");
@@ -1868,7 +1905,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 return;
             }
 
-            shouldAutoStop = true;
+            requestedStopReason = InteractionAnimationStopReason.PresenterFailure;
             context?.Logger?.LogError(
                 "[LCInteractionAnimationAPI] live_body.camera_displacement_guard.stop: " +
                 BuildMeasurements() + " action='stop_genuinely_new_displacement'.");
@@ -1940,7 +1977,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 $"sustained_ticks={stanceViewpointMismatchTicks} " +
                 $"required_ticks={StanceViewpointMismatchTicksRequired}";
 
-            if (cameraGuardExempt)
+            if (ConsumerOwnsCameraPresentation)
             {
                 if (!stanceViewpointGuardExemptLogged)
                 {
@@ -1952,7 +1989,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 return false;
             }
 
-            shouldAutoStop = true;
+            requestedStopReason = InteractionAnimationStopReason.PresenterFailure;
             context?.Logger?.LogError(
                 "[LCInteractionAnimationAPI] live_body.camera_displacement_guard.stop: " +
                 measurements + " action='stop_stance_mismatched_viewpoint_height'.");
@@ -1962,7 +1999,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private void CaptureScopedFirstPersonPose(InteractionAnimationManifest.BodyManifest body)
         {
             scopedFirstPersonPoseSnapshot = null;
-            if (body == null || !body.scopedFirstPersonTransformRestore)
+            if (body == null)
                 return;
 
             GameNetcodeStuff.PlayerControllerB player = context?.Request?.Player;
@@ -2248,7 +2285,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             if (player == null || !IsLocalPlayer(player))
                 return;
 
-            if (LocalCameraOwnedExternally)
+            if (ConsumerOwnsCameraPresentation)
             {
                 context?.Logger?.LogInfo(
                     "[RestoreSeam.camerachain] snap_skipped: " +
@@ -2803,7 +2840,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             ResetCameraDisplacementGuardState();
             cameraPositionStabilizer = null;
             cameraRotationStabilizer = null;
-            shouldAutoStop = false;
+            requestedStopReason = null;
             active = false;
             context = null;
         }
@@ -2817,7 +2854,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private void AttachPropIfConfigured()
         {
             InteractionAnimationManifest.PropManifest prop = context?.Manifest?.body?.prop;
-            if (prop == null || !prop.enabled || string.IsNullOrWhiteSpace(prop.prefabName))
+            if (prop == null || !prop.enabled || string.IsNullOrWhiteSpace(prop.prefabAssetName))
                 return;
 
             AssetBundle propBundle = clipPackBundle != null ? clipPackBundle : bundle;
@@ -2825,16 +2862,16 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             {
                 context?.Logger?.LogWarning(
                     "[LCInteractionAnimationAPI] live_body.prop_no_asset_bundle: " +
-                    $"handle={context.Handle} prefab='{prop.prefabName}'.");
+                    $"handle={context.Handle} prefab='{prop.prefabAssetName}'.");
                 return;
             }
 
-            GameObject prefab = propBundle.LoadAsset<GameObject>(prop.prefabName);
+            GameObject prefab = propBundle.LoadAsset<GameObject>(prop.prefabAssetName);
             if (prefab == null)
             {
                 context?.Logger?.LogWarning(
                     "[LCInteractionAnimationAPI] live_body.prop_prefab_missing: " +
-                    $"handle={context.Handle} prefab='{prop.prefabName}'.");
+                    $"handle={context.Handle} prefab='{prop.prefabAssetName}'.");
                 return;
             }
 
@@ -2851,26 +2888,26 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             Transform searchRoot = armsMetarig != null
                 ? armsMetarig
                 : (bodyAnimator != null ? bodyAnimator.transform : null);
-            Transform attachBone = FindChildRecursive(searchRoot, prop.attachBone);
+            Transform attachBone = searchRoot.Find(prop.attachBonePath);
             if (attachBone == null)
             {
                 context?.Logger?.LogWarning(
                     "[LCInteractionAnimationAPI] live_body.prop_attach_bone_missing: " +
-                    $"handle={context.Handle} bone='{prop.attachBone}'.");
+                    $"handle={context.Handle} bone='{prop.attachBonePath}'.");
                 return;
             }
 
             propInstance = UnityEngine.Object.Instantiate(prefab, attachBone, false);
-            propInstance.name = "Y4NGZ_" + prop.prefabName + "_Instance";
-            propInstance.transform.localPosition = prop.localPosition;
-            propInstance.transform.localEulerAngles = prop.localEulerAngles;
+            propInstance.name = "Y4NGZ_" + prop.prefabAssetName + "_Instance";
+            propInstance.transform.localPosition = prop.localPosition.ToUnityVector3();
+            propInstance.transform.localEulerAngles = prop.localEulerAngles.ToUnityVector3();
             propInstance.transform.localScale = Vector3.one * (prop.localScale > 0f ? prop.localScale : 1f);
             SetLayerRecursive(propInstance, attachBone.gameObject.layer);
             propReleased = false;
 
             context?.Logger?.LogInfo(
                 "[LCInteractionAnimationAPI] live_body.prop_attached: " +
-                $"handle={context.Handle} prefab='{prop.prefabName}' bone='{prop.attachBone}' " +
+                $"handle={context.Handle} prefab='{prop.prefabAssetName}' bone='{prop.attachBonePath}' " +
                 $"localPos=({prop.localPosition.x:0.###},{prop.localPosition.y:0.###},{prop.localPosition.z:0.###}) " +
                 $"scale={prop.localScale:0.####}.");
         }
@@ -2975,13 +3012,11 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             if (!string.IsNullOrWhiteSpace(body.controllerAssetName))
                 controller = bundle.LoadAsset<RuntimeAnimatorController>(body.controllerAssetName);
             if (controller == null)
-                controller = bundle.LoadAsset<RuntimeAnimatorController>(body.controller);
-            if (controller == null)
             {
-                reason = "live_body.controller_missing:" + body.controller;
+                reason = "live_body.controller_missing:" + body.controllerAssetName;
                 context.Logger?.LogWarning(
                     "[LCInteractionAnimationAPI] live_body.controller_missing: " +
-                    $"handle={context.Handle} controller='{body.controller}' assetName='{body.controllerAssetName}'.");
+                    $"handle={context.Handle} assetName='{body.controllerAssetName}'.");
                 return false;
             }
 
@@ -3018,16 +3053,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 return false;
             }
 
-            if (ReferenceEquals(controllerToApply, controller))
-                ApplyDiagnosticVanillaOverride(body, controller, ref controllerToApply);
-
             try
             {
                 bodyAnimator.runtimeAnimatorController = controllerToApply;
             }
             catch (Exception exception)
             {
-                reason = "live_body.controller_apply_exception:" + exception.Message;
+                reason = "live_body.controllerAssetName_apply_exception:" + exception.Message;
                 snapshot = null;
                 return false;
             }
@@ -3071,7 +3103,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             bodyAnimator.Update(0f);
 
             context.Logger?.LogInfo(
-                "[LCInteractionAnimationAPI] live_body.controller_applied: " +
+                "[LCInteractionAnimationAPI] live_body.controllerAssetName_applied: " +
                 $"handle={context.Handle} controller='{controller.name}' " +
                 $"previousController='{snapshot.RuntimeAnimatorController?.name ?? "<null>"}' " +
                 $"activeBool='{body.activeBool}' enterTrigger='{body.enterTrigger}' " +
@@ -3183,117 +3215,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 $"handle={context.Handle} bundle='{pack.bundleFileName}' overriddenSlots={applied}.");
             return true;
         }
-
-        // Diagnostic and future generic playback slot: wrap the authored shell controller in an
-        // AnimatorOverrideController and replace the slot clips with a clip borrowed from the
-        // vanilla controller captured in the snapshot. Vanilla clips have guaranteed-correct
-        // binding paths and camera-relative poses, so a visible result proves the runtime path
-        // end to end and isolates retarget quality as the only remaining variable.
-        private void ApplyDiagnosticVanillaOverride(
-            InteractionAnimationManifest.BodyManifest body,
-            RuntimeAnimatorController shellController,
-            ref RuntimeAnimatorController controllerToApply)
-        {
-            string clipName = body.diagnosticVanillaOverrideClip;
-            if (string.IsNullOrWhiteSpace(clipName) || snapshot?.RuntimeAnimatorController == null)
-                return;
-
-            AnimationClip vanillaClip = null;
-            AnimationClip[] vanillaClips;
-            try
-            {
-                vanillaClips = snapshot.RuntimeAnimatorController.animationClips ?? Array.Empty<AnimationClip>();
-            }
-            catch
-            {
-                vanillaClips = Array.Empty<AnimationClip>();
-            }
-
-            for (int i = 0; i < vanillaClips.Length; i++)
-            {
-                if (vanillaClips[i] != null &&
-                    string.Equals(vanillaClips[i].name, clipName, StringComparison.OrdinalIgnoreCase))
-                {
-                    vanillaClip = vanillaClips[i];
-                    break;
-                }
-            }
-
-            if (vanillaClip == null)
-            {
-                var candidates = new List<string>();
-                for (int i = 0; i < vanillaClips.Length && candidates.Count < 40; i++)
-                {
-                    string name = vanillaClips[i] != null ? vanillaClips[i].name : null;
-                    if (!string.IsNullOrEmpty(name) &&
-                        (name.IndexOf("hold", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                         name.IndexOf("grab", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                         name.IndexOf("shovel", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                         name.IndexOf("reel", StringComparison.OrdinalIgnoreCase) >= 0))
-                    {
-                        candidates.Add(name);
-                    }
-                }
-
-                context.Logger?.LogWarning(
-                    "[LCInteractionAnimationAPI] live_body.vanilla_override_clip_missing: " +
-                    $"handle={context.Handle} requested='{clipName}' vanillaClipCount={vanillaClips.Length} " +
-                    $"candidates=[{string.Join(", ", candidates.ToArray())}].");
-                return;
-            }
-
-            // The slot prefix is manifest-authored; without it there is no way to know which
-            // shell clips the vanilla clip should replace, so the diagnostic stands down.
-            string slotPrefix = body.overrideSlotPrefix;
-            if (string.IsNullOrWhiteSpace(slotPrefix))
-            {
-                context.Logger?.LogWarning(
-                    "[LCInteractionAnimationAPI] live_body.vanilla_override_slot_prefix_missing: " +
-                    $"handle={context.Handle} requested='{clipName}' " +
-                    "action='skip_diagnostic_vanilla_override'.");
-                return;
-            }
-
-            var overrideController = new AnimatorOverrideController(shellController);
-            int overriddenSlots = 0;
-            AnimationClip[] shellClips;
-            try
-            {
-                shellClips = shellController.animationClips ?? Array.Empty<AnimationClip>();
-            }
-            catch
-            {
-                shellClips = Array.Empty<AnimationClip>();
-            }
-
-            for (int i = 0; i < shellClips.Length; i++)
-            {
-                AnimationClip slotClip = shellClips[i];
-                if (slotClip == null ||
-                    !slotClip.name.StartsWith(slotPrefix, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                overrideController[slotClip] = vanillaClip;
-                overriddenSlots++;
-            }
-
-            if (overriddenSlots == 0)
-            {
-                context.Logger?.LogWarning(
-                    "[LCInteractionAnimationAPI] live_body.vanilla_override_no_slots: " +
-                    $"handle={context.Handle} slotPrefix='{slotPrefix}'.");
-                return;
-            }
-
-            controllerToApply = overrideController;
-            context.Logger?.LogInfo(
-                "[LCInteractionAnimationAPI] live_body.vanilla_override_applied: " +
-                $"handle={context.Handle} clip='{vanillaClip.name}' clipLength={vanillaClip.length:0.###} " +
-                $"slotPrefix='{slotPrefix}' overriddenSlots={overriddenSlots}.");
-        }
-
         private void ApplyLayerWeights()
         {
             InteractionAnimationManifest.BodyManifest body = context?.Manifest?.body;
@@ -3357,7 +3278,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     FireTriggerIfExists(body.exitTrigger);
                 }
 
-                bool scopedRestore = body != null && body.scopedFirstPersonTransformRestore;
+                bool scopedRestore = body != null;
 
                 // Equip-while-crouched then stand (or the reverse) makes the captured base-layer
                 // state a stale stance pose. Skip its forced replay and let the locomotion
@@ -3750,14 +3671,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             transformChainDiagnosticsSubscribed = false;
         }
 
-        // localCameraOwnedExternally means a separate presentation owns the rendered local
+        // A consumer-owned camera presentation also owns the rendered local
         // player. Sample after every LateUpdate writer, but emit only the first state and
         // eligibility changes so an intermittent arms/visor leak is diagnosable without the
         // full restore-seam frame logger or per-frame log volume.
         private void StartExternalCameraPresentationDiagnostics()
         {
             StopExternalCameraPresentationDiagnostics();
-            if (!LocalCameraOwnedExternally ||
+            if (!ConsumerOwnsCameraPresentation ||
                 !InteractionAnimationApiRestoreDiagnostics
                     .ExternalCameraPresentationLoggerEnabled)
             {
@@ -3929,7 +3850,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             try
             {
-                if (!active || !LocalCameraOwnedExternally ||
+                if (!active || !ConsumerOwnsCameraPresentation ||
                     !InteractionAnimationApiRestoreDiagnostics
                         .ExternalCameraPresentationLoggerEnabled)
                 {
@@ -4312,7 +4233,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private void StartLocalVisorHardGlue()
         {
             StopLocalVisorHardGlue();
-            if (LocalCameraOwnedExternally)
+            if (ConsumerOwnsCameraPresentation)
             {
                 context?.Logger?.LogInfo(
                     "[LCInteractionAnimationAPI] live_body.visor_glue_skipped: " +
@@ -4892,7 +4813,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             return InteractionAnimationAssetPathResolver.TryResolveBundlePath(
                 bundleFileName,
                 assetRootPath,
-                InteractionAnimationAssetPathResolver.GetDefaultAssetRoots(),
                 out resolvedPath,
                 out reason);
         }

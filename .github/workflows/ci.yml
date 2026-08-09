@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore from public sources
+        run: dotnet restore Y4NGZInteractions.slnx
+
+      - name: Release build and public API check
+        run: dotnet build Y4NGZInteractions.slnx -c Release --no-restore
+
+      - name: Behavioral unit tests
+        run: dotnet test Y4NGZInteractions.slnx -c Release --no-build
+
+      - name: Build sample consumer
+        run: dotnet build examples/SampleConsumer/Y4NGZInteractions.SampleConsumer.csproj -c Release
+
+      - name: Static API and package guard
+        shell: pwsh
+        run: ./scripts/test-player-animation-api-static-regressions.ps1
+
+      - name: Public tree sanitization
+        shell: pwsh
+        run: ./scripts/test-public-tree.ps1
+
+      - name: Markdown links
+        shell: pwsh
+        run: ./scripts/test-markdown-links.ps1
+
+      - name: Stage unpublished candidate
+        shell: pwsh
+        run: ./release/stage-y4ngz-interactions.ps1 -SkipBuild
+
+      - name: Upload unpublished candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: Y4NGZInteractions-candidate
+          path: release/dist/*-candidate.zip
+          if-no-files-found: error

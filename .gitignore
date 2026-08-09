@@ -14,23 +14,19 @@ obj/
 *.stackdump
 deploy/
 artifacts/
-
-# Local-only working trees: retired code kept for reference and raw research notes.
+# Local planning, investigation, and paused-work state.
+/.planning/
+/docs/handoffs/
+# Local-only retired code, research, and consumer-owned scratch assets.
 /_archive/
 /research/
-
+/runtime-assets/
 # Local dependency/reference DLLs copied per developer machine.
 src/**/libs/
 src/**/lib/
 src/**/refs/
-
 # Local packaging output.
 release/staging/
 release/dist/
 release/build-deploy-sink/
 release/verify-deploy/
-
-# Consumer animation payloads are owned by the consuming mods (Y4NGZUpgrades,
-# Y4NGZCompany, Y4NGZMonsters), never by this API. What remains here on disk is
-# local dev-only scratch (the drone tablet viewmodel probe bundle), untracked.
-/runtime-assets/
