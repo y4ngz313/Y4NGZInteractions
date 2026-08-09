@@ -1,6 +1,6 @@
 # API Reference
 
-Last updated: 2026-08-08
+Last updated: 2026-08-09
 
 Namespace: Y4NGZInteractions.InteractionAnimationApi
 
@@ -122,3 +122,9 @@ Event data is immutable: Handle, Player, PackId, InteractionId, PresentationKind
 ## External animator ownership
 
 BodyWorld refuses to replace a controller it does not recognize as the expected vanilla controller or an incumbent session owned by this API. A consumer or another mod that directly owns the body animator must release it before starting BodyWorld.
+
+## BodyWorld camera and playback semantics
+
+preserveGameplayCamera preserves camera continuity at controller seams; it does not freeze player-local position. stopOnGameplayCameraDisplacement controls the stance-aware safety guard. stabilizeLocalCameraPosition is the explicit opt-in session position pin. localCameraOwnedExternally is the explicit camera/visor ownership declaration. None of preservation, guarding, or position pinning is treated as an ownership signal.
+
+For BodyWorld manifests with a movementParameter, value 2 is the generic sprint state. While that state is active, the presenter emits low-noise live_body.playback_rate_sample and live_body.playback_rate_summary records. They compare Animator normalized-time progression with a monotonic wall clock and include state length, configured Animator/state speed, completed cycles, and effective clip-seconds per wall-clock second.

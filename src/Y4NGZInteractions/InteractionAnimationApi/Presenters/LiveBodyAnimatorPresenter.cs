@@ -26,6 +26,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         // height carried in VanillaCameraPlayerLocalRestExpectation.y (2.35).
         private const float VanillaCameraCrouchedPlayerLocalRestHeight = 1.17f;
         private const float StanceViewpointHeightToleranceMeters = 0.15f;
+        private const double PlaybackRateSampleIntervalSeconds = 1d;
+        private const double PlaybackRateMinimumSampleSeconds = 0.05d;
         // Vanilla glides the camera between the stand and crouch heights over roughly a
         // quarter second after isCrouching flips, so the mismatch must persist well past that
         // glide before it is treated as a desynced viewpoint rather than a transition in
@@ -93,6 +95,18 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private float exitStartFullBodyWeight;
         private float exitStartFirstPersonWeight;
         private int lastMovementValue = -1;
+        private bool playbackRateHasBaseline;
+        private int playbackRateLayerIndex = -1;
+        private int playbackRateFullPathHash;
+        private int playbackRateShortNameHash;
+        private float playbackRateBaselineNormalizedTime;
+        private long playbackRateBaselineTimestamp;
+        private int playbackRateStateSegments;
+        private double playbackRateMeasuredWallSeconds;
+        private double playbackRateNormalizedCycles;
+        private double playbackRateClipSeconds;
+        private int playbackRateCompletedCycles;
+        private bool playbackRateFailureLogged;
         private Vector3 cameraPlayerLocalPositionAtStart;
         private bool hasCameraPlayerLocalBaseline;
         private float gameplayCameraLocalYawAtStart;
@@ -378,6 +392,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             nextDiagnosticsAtSeconds = 0f;
             exitRequested = false;
             lastMovementValue = -1;
+            ResetPlaybackRateProbe();
             requestedStopReason = null;
             active = true;
             StartTransformChainDiagnostics();
@@ -403,7 +418,11 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 $"handle={context.Handle} interaction='{manifest.interactionId}' " +
                 $"controller='{appliedController.name}' animator='{bodyAnimator.name}' " +
                 $"fullBodyLayer={fullBodyLayerIndex} firstPersonArmsLayer={firstPersonLayerIndex} " +
-                $"rigBuildersSuppressed={suppressedRigBuilders.Count}.");
+                $"rigBuildersSuppressed={suppressedRigBuilders.Count} " +
+                $"preserveGameplayCamera={body.preserveGameplayCamera} " +
+                $"stopOnGameplayCameraDisplacement={body.stopOnGameplayCameraDisplacement} " +
+                $"stabilizeLocalCameraPosition={body.stabilizeLocalCameraPosition} " +
+                $"localCameraOwnedExternally={body.localCameraOwnedExternally}.");
             return true;
         }
 
@@ -441,6 +460,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             if (IsLocalPlayer(context?.Request?.Player))
                 SyncVanillaLocomotionParameters("tick");
             DriveMovementParameter();
+            SamplePlaybackRateProgression();
             DetectAutoStopConditions();
             LogFrameDiagnostics();
         }
@@ -496,13 +516,19 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         /// behavior in this presenter exists to keep a first-person camera at rest, so all of
         /// them must stand down rather than fight the external owner for the same transform.
         /// </summary>
-        private bool ConsumerOwnsCameraPresentation =>
-            context?.Manifest?.body?.preserveGameplayCamera == false;
+        private bool LocalCameraOwnedExternally =>
+            context?.Manifest?.body?.localCameraOwnedExternally == true;
+
+        private bool PreserveGameplayCamera =>
+            context?.Manifest?.body?.preserveGameplayCamera != false;
+
+        private bool StopOnGameplayCameraDisplacement =>
+            context?.Manifest?.body?.stopOnGameplayCameraDisplacement != false;
 
         private void CaptureLocalCameraBaseline()
         {
             ResetCameraDisplacementGuardState();
-            if (ConsumerOwnsCameraPresentation)
+            if (LocalCameraOwnedExternally)
             {
                 context?.Logger?.LogInfo(
                     "[LCInteractionAnimationAPI] live_body.camera_displacement_guard.baseline_unavailable: " +
@@ -527,7 +553,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 return;
             }
 
-            TryHealCameraDriftAtSessionEntry(player);
+            if (PreserveGameplayCamera)
+                TryHealCameraDriftAtSessionEntry(player);
 
             Transform gameplayCameraTransform = player.gameplayCamera.transform;
             cameraPlayerLocalPositionAtStart =
@@ -591,7 +618,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 $"rotation_residue_threshold_degrees={CameraRotationResidueThresholdDegrees:0.###} " +
                 $"pre_existing_rotation_residue={preExistingRotationResidue} " +
                 $"baseline_crouching={baselineCrouching} " +
-                $"consumerOwnsCamera={ConsumerOwnsCameraPresentation}.");
+                $"localCameraOwnedExternally={LocalCameraOwnedExternally} " +
+                $"preserveGameplayCamera={PreserveGameplayCamera} " +
+                $"stopOnGameplayCameraDisplacement={StopOnGameplayCameraDisplacement}.");
 
             if (cameraGuardPreExistingDisplacementDetected)
             {
@@ -830,9 +859,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             InteractionAnimationManifest.BodyManifest body)
         {
             cameraPositionStabilizer = null;
-            if (body == null || !body.preserveGameplayCamera ||
+            if (body == null || !body.stabilizeLocalCameraPosition ||
                 !hasCameraPlayerLocalBaseline ||
-                ConsumerOwnsCameraPresentation)
+                LocalCameraOwnedExternally)
             {
                 return;
             }
@@ -851,7 +880,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     cameraPlayerLocalPositionAtStart);
                 context?.Logger?.LogInfo(
                     "[LCInteractionAnimationAPI] live_body.local_camera_stabilizer_started: " +
-                    $"handle={context.Handle} playerLocalPosition={cameraPlayerLocalPositionAtStart}.");
+                    $"handle={context.Handle} playerLocalPosition={cameraPlayerLocalPositionAtStart} " +
+                    "mode='session_position_pin' explicitOptIn=True.");
             }
             catch (Exception exception)
             {
@@ -870,12 +900,22 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private void StartLocalCameraRotationStabilizer()
         {
             cameraRotationStabilizer = null;
-            if (ConsumerOwnsCameraPresentation)
+            if (LocalCameraOwnedExternally)
             {
                 context?.Logger?.LogInfo(
                     "[LCInteractionAnimationAPI] live_body.camera_rotation_stabilizer_skipped: " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
                     "enabled=True reason='local_camera_owned_externally' " +
+                    "action='leave_rotation_unpinned'.");
+                return;
+            }
+
+            if (!PreserveGameplayCamera)
+            {
+                context?.Logger?.LogInfo(
+                    "[LCInteractionAnimationAPI] live_body.camera_rotation_stabilizer_skipped: " +
+                    $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
+                    "enabled=False reason='manifest_preservation_disabled' " +
                     "action='leave_rotation_unpinned'.");
                 return;
             }
@@ -980,7 +1020,10 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             if (!InteractionAnimationApiRestoreDiagnostics.RestoreScopedCameraPinEnabled)
                 return;
 
-            if (ConsumerOwnsCameraPresentation)
+            if (!PreserveGameplayCamera)
+                return;
+
+            if (LocalCameraOwnedExternally)
             {
                 context?.Logger?.LogInfo(
                     "[RestoreSeam.camerapin] pin_skipped: " +
@@ -1057,6 +1100,16 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
         private CameraRotationSnapshot CaptureSeamCameraRotation(string phase)
         {
+            if (LocalCameraOwnedExternally || !PreserveGameplayCamera)
+            {
+                context?.Logger?.LogInfo(
+                    "[RestoreSeam.camerarotation] capture_skipped: " +
+                    $"phase='{phase}' frame={Time.frameCount} " +
+                    $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
+                    $"reason='{(LocalCameraOwnedExternally ? "local_camera_owned_externally" : "manifest_preservation_disabled")}'.");
+                return default;
+            }
+
             bool stopSnapToRest =
                 string.Equals(phase, "stop", StringComparison.Ordinal) &&
                 InteractionAnimationApiRestoreDiagnostics.RestoreCameraRotationSnapToRestEnabled;
@@ -1177,13 +1230,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             string phase,
             bool animatorRestored)
         {
-            if (ConsumerOwnsCameraPresentation)
+            if (LocalCameraOwnedExternally || !PreserveGameplayCamera)
             {
                 context?.Logger?.LogInfo(
                     "[RestoreSeam.camerarotation] reapply_skipped: " +
                     $"phase='{phase}' frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
-                    "reason='local_camera_owned_externally'.");
+                    $"reason='{(LocalCameraOwnedExternally ? "local_camera_owned_externally" : "manifest_preservation_disabled")}'.");
                 return;
             }
 
@@ -1348,7 +1401,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
         private VisorPoseSnapshot CaptureSeamVisorPose(string phase)
         {
-            if (ConsumerOwnsCameraPresentation)
+            if (LocalCameraOwnedExternally)
             {
                 context?.Logger?.LogInfo(
                     "[RestoreSeam.visor] capture_skipped: " +
@@ -1513,7 +1566,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             string phase,
             bool animatorRestored)
         {
-            if (ConsumerOwnsCameraPresentation)
+            if (LocalCameraOwnedExternally)
             {
                 context?.Logger?.LogInfo(
                     "[RestoreSeam.visor] reapply_skipped: " +
@@ -1809,7 +1862,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
         private void DetectUnsafeCameraDisplacement()
         {
-            if (!hasCameraPlayerLocalBaseline || requestedStopReason.HasValue)
+            if (!StopOnGameplayCameraDisplacement ||
+                !hasCameraPlayerLocalBaseline ||
+                requestedStopReason.HasValue)
                 return;
 
             GameNetcodeStuff.PlayerControllerB player = context?.Request?.Player;
@@ -1860,7 +1915,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 $"pre_existing_displacement={cameraGuardPreExistingDisplacementDetected} " +
                 $"baseline_contaminated={cameraGuardBaselineContaminated}";
 
-            if (ConsumerOwnsCameraPresentation)
+            if (LocalCameraOwnedExternally)
             {
                 if (!consumerOwnedCameraLogged)
                 {
@@ -1977,7 +2032,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 $"sustained_ticks={stanceViewpointMismatchTicks} " +
                 $"required_ticks={StanceViewpointMismatchTicksRequired}";
 
-            if (ConsumerOwnsCameraPresentation)
+            if (LocalCameraOwnedExternally)
             {
                 if (!stanceViewpointGuardExemptLogged)
                 {
@@ -2270,6 +2325,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         /// </summary>
         private void ApplyCameraChainPositionSnapToRest()
         {
+            if (!PreserveGameplayCamera)
+                return;
+
             if (!InteractionAnimationApiRestoreDiagnostics
                     .RestoreCameraChainPositionSnapToRestEnabled)
             {
@@ -2285,7 +2343,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             if (player == null || !IsLocalPlayer(player))
                 return;
 
-            if (ConsumerOwnsCameraPresentation)
+            if (LocalCameraOwnedExternally)
             {
                 context?.Logger?.LogInfo(
                     "[RestoreSeam.camerachain] snap_skipped: " +
@@ -2714,14 +2772,185 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             if (movement == lastMovementValue)
                 return;
 
+            int previousMovement = lastMovementValue;
+            if (previousMovement == 2 && movement != 2)
+                FinishPlaybackRateProbe("movement_changed");
+
             lastMovementValue = movement;
             try { bodyAnimator.SetInteger(body.movementParameter, movement); } catch { }
+            if (movement == 2 && previousMovement != 2)
+                ResetPlaybackRateProbe();
+        }
+
+        private void ResetPlaybackRateProbe()
+        {
+            playbackRateHasBaseline = false;
+            playbackRateLayerIndex = -1;
+            playbackRateFullPathHash = 0;
+            playbackRateShortNameHash = 0;
+            playbackRateBaselineNormalizedTime = 0f;
+            playbackRateBaselineTimestamp = 0L;
+            playbackRateStateSegments = 0;
+            playbackRateMeasuredWallSeconds = 0d;
+            playbackRateNormalizedCycles = 0d;
+            playbackRateClipSeconds = 0d;
+            playbackRateCompletedCycles = 0;
+            playbackRateFailureLogged = false;
+        }
+
+        private int ResolvePlaybackRateLayerIndex()
+        {
+            if (bodyAnimator == null || bodyAnimator.layerCount <= 0)
+                return -1;
+            if (firstPersonLayerIndex >= 0 && firstPersonLayerIndex < bodyAnimator.layerCount)
+                return firstPersonLayerIndex;
+            if (fullBodyLayerIndex >= 0 && fullBodyLayerIndex < bodyAnimator.layerCount)
+                return fullBodyLayerIndex;
+            return 0;
+        }
+
+        private void BeginPlaybackRateSegment(
+            int layerIndex,
+            AnimatorStateInfo stateInfo,
+            long timestamp)
+        {
+            playbackRateHasBaseline = true;
+            playbackRateLayerIndex = layerIndex;
+            playbackRateFullPathHash = stateInfo.fullPathHash;
+            playbackRateShortNameHash = stateInfo.shortNameHash;
+            playbackRateBaselineNormalizedTime = stateInfo.normalizedTime;
+            playbackRateBaselineTimestamp = timestamp;
+            playbackRateStateSegments++;
+
+            float animatorSpeed = bodyAnimator != null ? bodyAnimator.speed : 0f;
+            float expectedSpeedFactor = animatorSpeed * stateInfo.speed * stateInfo.speedMultiplier;
+            context?.Logger?.LogInfo(
+                "[LCInteractionAnimationAPI] live_body.playback_rate_segment_started: " +
+                $"handle={context.Handle} interaction='{context.Manifest?.interactionId ?? "<none>"}' " +
+                $"movement=2 layer={layerIndex} fullPathHash={stateInfo.fullPathHash} " +
+                $"shortNameHash={stateInfo.shortNameHash} normalizedTime={stateInfo.normalizedTime:0.######} " +
+                $"stateLengthSeconds={stateInfo.length:0.######} looping={stateInfo.loop} " +
+                $"animatorSpeed={animatorSpeed:0.######} stateSpeed={stateInfo.speed:0.######} " +
+                $"stateSpeedMultiplier={stateInfo.speedMultiplier:0.######} " +
+                $"expectedClipSecondsPerWallSecond={expectedSpeedFactor:0.######}.");
+        }
+
+        private void SamplePlaybackRateProgression(bool force = false)
+        {
+            if (lastMovementValue != 2 || bodyAnimator == null)
+                return;
+
+            int layerIndex = ResolvePlaybackRateLayerIndex();
+            if (layerIndex < 0)
+                return;
+
+            try
+            {
+                if (bodyAnimator.IsInTransition(layerIndex))
+                    return;
+
+                AnimatorStateInfo stateInfo =
+                    bodyAnimator.GetCurrentAnimatorStateInfo(layerIndex);
+                long timestamp = Stopwatch.GetTimestamp();
+                if (!playbackRateHasBaseline ||
+                    playbackRateLayerIndex != layerIndex ||
+                    playbackRateFullPathHash != stateInfo.fullPathHash)
+                {
+                    BeginPlaybackRateSegment(layerIndex, stateInfo, timestamp);
+                    return;
+                }
+
+                double wallSeconds =
+                    (timestamp - playbackRateBaselineTimestamp) /
+                    (double)Stopwatch.Frequency;
+                if (wallSeconds < PlaybackRateMinimumSampleSeconds ||
+                    (!force && wallSeconds < PlaybackRateSampleIntervalSeconds))
+                {
+                    return;
+                }
+
+                float animatorSpeed = bodyAnimator.speed;
+                if (!AnimatorPlaybackRateMath.TryMeasure(
+                        playbackRateBaselineNormalizedTime,
+                        stateInfo.normalizedTime,
+                        wallSeconds,
+                        stateInfo.length,
+                        animatorSpeed,
+                        stateInfo.speed,
+                        stateInfo.speedMultiplier,
+                        out AnimatorPlaybackRateMeasurement measurement))
+                {
+                    BeginPlaybackRateSegment(layerIndex, stateInfo, timestamp);
+                    return;
+                }
+
+                playbackRateMeasuredWallSeconds += measurement.WallSeconds;
+                playbackRateNormalizedCycles += measurement.NormalizedCyclesAdvanced;
+                playbackRateClipSeconds += measurement.ClipSecondsAdvanced;
+                playbackRateCompletedCycles += measurement.CompletedCycles;
+
+                context?.Logger?.LogInfo(
+                    "[LCInteractionAnimationAPI] live_body.playback_rate_sample: " +
+                    $"handle={context.Handle} interaction='{context.Manifest?.interactionId ?? "<none>"}' " +
+                    $"movement=2 sampleKind='{(force ? "final" : "interval")}' " +
+                    $"layer={layerIndex} fullPathHash={playbackRateFullPathHash} " +
+                    $"shortNameHash={playbackRateShortNameHash} " +
+                    $"wallSeconds={measurement.WallSeconds:0.######} " +
+                    $"normalizedCyclesAdvanced={measurement.NormalizedCyclesAdvanced:0.######} " +
+                    $"completedCycles={measurement.CompletedCycles} " +
+                    $"effectiveCyclesPerSecond={measurement.EffectiveCyclesPerSecond:0.######} " +
+                    $"effectiveClipSecondsPerWallSecond={measurement.EffectiveClipSecondsPerWallSecond:0.######} " +
+                    $"expectedClipSecondsPerWallSecond={measurement.ExpectedClipSecondsPerWallSecond:0.######} " +
+                    $"effectiveToExpectedRatio={measurement.EffectiveToExpectedRatio:0.######} " +
+                    $"animatorSpeed={animatorSpeed:0.######} stateSpeed={stateInfo.speed:0.######} " +
+                    $"stateSpeedMultiplier={stateInfo.speedMultiplier:0.######}.");
+
+                playbackRateBaselineNormalizedTime = stateInfo.normalizedTime;
+                playbackRateBaselineTimestamp = timestamp;
+            }
+            catch (Exception exception)
+            {
+                if (!playbackRateFailureLogged)
+                {
+                    playbackRateFailureLogged = true;
+                    context?.Logger?.LogWarning(
+                        "[LCInteractionAnimationAPI] live_body.playback_rate_unavailable: " +
+                        $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
+                        $"reason='{exception.Message}'.");
+                }
+            }
+        }
+
+        private void FinishPlaybackRateProbe(string reason)
+        {
+            if (lastMovementValue == 2)
+                SamplePlaybackRateProgression(force: true);
+
+            if (playbackRateMeasuredWallSeconds >= PlaybackRateMinimumSampleSeconds)
+            {
+                double effectiveClipSecondsPerWallSecond =
+                    playbackRateClipSeconds / playbackRateMeasuredWallSeconds;
+                context?.Logger?.LogInfo(
+                    "[LCInteractionAnimationAPI] live_body.playback_rate_summary: " +
+                    $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
+                    $"interaction='{context?.Manifest?.interactionId ?? "<none>"}' movement=2 " +
+                    $"reason='{reason}' stateSegments={playbackRateStateSegments} " +
+                    $"measuredWallSeconds={playbackRateMeasuredWallSeconds:0.######} " +
+                    $"normalizedCyclesAdvanced={playbackRateNormalizedCycles:0.######} " +
+                    $"completedCycles={playbackRateCompletedCycles} " +
+                    $"clipSecondsAdvanced={playbackRateClipSeconds:0.######} " +
+                    $"effectiveClipSecondsPerWallSecond={effectiveClipSecondsPerWallSecond:0.######}.");
+            }
+
+            ResetPlaybackRateProbe();
         }
 
         public void Stop(InteractionAnimationStopReason stopReason)
         {
             if (!active && bodyAnimator == null && bundle == null)
                 return;
+
+            FinishPlaybackRateProbe("session_stop");
 
             SeamPhaseStopwatch seamTiming =
                 InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled
@@ -2834,6 +3063,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             exitStartFullBodyWeight = 0f;
             exitStartFirstPersonWeight = 0f;
             lastMovementValue = -1;
+            ResetPlaybackRateProbe();
             hasLastSyncedCrouchState = false;
             lastSyncedCrouchState = false;
             lastLocomotionSyncSignature = -1;
@@ -3678,7 +3908,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private void StartExternalCameraPresentationDiagnostics()
         {
             StopExternalCameraPresentationDiagnostics();
-            if (!ConsumerOwnsCameraPresentation ||
+            if (!LocalCameraOwnedExternally ||
                 !InteractionAnimationApiRestoreDiagnostics
                     .ExternalCameraPresentationLoggerEnabled)
             {
@@ -3850,7 +4080,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             try
             {
-                if (!active || !ConsumerOwnsCameraPresentation ||
+                if (!active || !LocalCameraOwnedExternally ||
                     !InteractionAnimationApiRestoreDiagnostics
                         .ExternalCameraPresentationLoggerEnabled)
                 {
@@ -4233,7 +4463,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private void StartLocalVisorHardGlue()
         {
             StopLocalVisorHardGlue();
-            if (ConsumerOwnsCameraPresentation)
+            if (LocalCameraOwnedExternally)
             {
                 context?.Logger?.LogInfo(
                     "[LCInteractionAnimationAPI] live_body.visor_glue_skipped: " +
@@ -5048,6 +5278,97 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             {
                 return false;
             }
+        }
+    }
+
+    internal readonly struct AnimatorPlaybackRateMeasurement
+    {
+        internal AnimatorPlaybackRateMeasurement(
+            double wallSeconds,
+            double normalizedCyclesAdvanced,
+            int completedCycles,
+            double clipSecondsAdvanced,
+            double effectiveCyclesPerSecond,
+            double effectiveClipSecondsPerWallSecond,
+            double expectedClipSecondsPerWallSecond,
+            double effectiveToExpectedRatio)
+        {
+            WallSeconds = wallSeconds;
+            NormalizedCyclesAdvanced = normalizedCyclesAdvanced;
+            CompletedCycles = completedCycles;
+            ClipSecondsAdvanced = clipSecondsAdvanced;
+            EffectiveCyclesPerSecond = effectiveCyclesPerSecond;
+            EffectiveClipSecondsPerWallSecond = effectiveClipSecondsPerWallSecond;
+            ExpectedClipSecondsPerWallSecond = expectedClipSecondsPerWallSecond;
+            EffectiveToExpectedRatio = effectiveToExpectedRatio;
+        }
+
+        internal double WallSeconds { get; }
+        internal double NormalizedCyclesAdvanced { get; }
+        internal int CompletedCycles { get; }
+        internal double ClipSecondsAdvanced { get; }
+        internal double EffectiveCyclesPerSecond { get; }
+        internal double EffectiveClipSecondsPerWallSecond { get; }
+        internal double ExpectedClipSecondsPerWallSecond { get; }
+        internal double EffectiveToExpectedRatio { get; }
+    }
+
+    internal static class AnimatorPlaybackRateMath
+    {
+        internal static bool TryMeasure(
+            float startNormalizedTime,
+            float endNormalizedTime,
+            double wallSeconds,
+            float stateLengthSeconds,
+            float animatorSpeed,
+            float stateSpeed,
+            float stateSpeedMultiplier,
+            out AnimatorPlaybackRateMeasurement measurement)
+        {
+            measurement = default;
+            if (wallSeconds <= 0d || double.IsNaN(wallSeconds) ||
+                double.IsInfinity(wallSeconds) ||
+                stateLengthSeconds <= 0f || float.IsNaN(stateLengthSeconds) ||
+                float.IsInfinity(stateLengthSeconds) ||
+                float.IsNaN(startNormalizedTime) || float.IsInfinity(startNormalizedTime) ||
+                float.IsNaN(endNormalizedTime) || float.IsInfinity(endNormalizedTime))
+            {
+                return false;
+            }
+
+            double normalizedCyclesAdvanced =
+                (double)endNormalizedTime - startNormalizedTime;
+            if (normalizedCyclesAdvanced < 0d)
+                return false;
+
+            int completedCycles = Math.Max(
+                0,
+                (int)Math.Floor(endNormalizedTime) -
+                (int)Math.Floor(startNormalizedTime));
+            double clipSecondsAdvanced =
+                normalizedCyclesAdvanced * stateLengthSeconds;
+            double effectiveCyclesPerSecond =
+                normalizedCyclesAdvanced / wallSeconds;
+            double effectiveClipSecondsPerWallSecond =
+                clipSecondsAdvanced / wallSeconds;
+            double expectedClipSecondsPerWallSecond =
+                (double)animatorSpeed * stateSpeed * stateSpeedMultiplier;
+            double effectiveToExpectedRatio =
+                Math.Abs(expectedClipSecondsPerWallSecond) > 0.000001d
+                    ? effectiveClipSecondsPerWallSecond /
+                        expectedClipSecondsPerWallSecond
+                    : 0d;
+
+            measurement = new AnimatorPlaybackRateMeasurement(
+                wallSeconds,
+                normalizedCyclesAdvanced,
+                completedCycles,
+                clipSecondsAdvanced,
+                effectiveCyclesPerSecond,
+                effectiveClipSecondsPerWallSecond,
+                expectedClipSecondsPerWallSecond,
+                effectiveToExpectedRatio);
+            return true;
         }
     }
 

@@ -39,7 +39,11 @@ $required = @(
     "TrySetInteractionFloat",
     "TryGetActiveInteraction",
     "InteractionAnimationValidationReport",
-    "manifest_schema_1_migrated"
+    "manifest_schema_1_migrated",
+    "stopOnGameplayCameraDisplacement",
+    "stabilizeLocalCameraPosition",
+    "localCameraOwnedExternally",
+    "live_body.playback_rate_sample"
 )
 foreach ($term in $required) {
     if (-not $source.Contains($term)) {

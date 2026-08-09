@@ -171,8 +171,27 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Authoring
             /// <summary>Gets or sets an optional Int parameter driven from movement state.</summary>
             public string movementParameter = string.Empty;
 
-            /// <summary>Gets or sets whether the API preserves the local gameplay camera.</summary>
+            /// <summary>
+            /// Gets or sets whether controller-swap and restore seams preserve the local gameplay
+            /// camera. This does not freeze its position or transfer camera ownership.
+            /// </summary>
             public bool preserveGameplayCamera = true;
+
+            /// <summary>
+            /// Gets or sets whether a sustained gameplay-camera displacement stops the session.
+            /// </summary>
+            public bool stopOnGameplayCameraDisplacement = true;
+
+            /// <summary>
+            /// Gets or sets whether the gameplay camera's player-local position is pinned for the
+            /// session while mouse-look rotation remains live.
+            /// </summary>
+            public bool stabilizeLocalCameraPosition;
+
+            /// <summary>
+            /// Gets or sets whether another presentation system owns the local camera and visor.
+            /// </summary>
+            public bool localCameraOwnedExternally;
 
             /// <summary>Gets or sets whether vanilla special animations stop the session.</summary>
             public bool stopOnVanillaSpecialAnimation = true;

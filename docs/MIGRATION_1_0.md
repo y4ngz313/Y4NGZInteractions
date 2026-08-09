@@ -1,6 +1,6 @@
 # 1.0 Migration Guide
 
-Last updated: 2026-08-08
+Last updated: 2026-08-09
 
 1.0 is a deliberate pre-1.0 contract cleanup. Downstream mods must rebuild against the final assembly.
 
@@ -30,13 +30,25 @@ Rename:
 - prop.prefabName to prefabAssetName
 - prop.attachBone to attachBonePath
 - suppressRigBuilders to rebuildRigBuilders with inverted meaning
-- diagnostic camera/special exemptions to preserveGameplayCamera and stopOnVanillaSpecialAnimation
+- exemptFromCameraDisplacementGuard to body.stopOnGameplayCameraDisplacement with inverted meaning
+- exemptFromSpecialAnimationAutoStop to body.stopOnVanillaSpecialAnimation with inverted meaning
 
 Replace renderer hint arrays with hideVanillaFirstPersonArms, prefabRenderersToHide, and prefabRenderersToShow.
 
 Remove frameRate, root displayName, localViewmodel.root, runtimeMaterialMode, sockets, body.clip, diagnostic override fields, validation metadata, and low-level restore toggles.
 
 durationSeconds in the manifest is the sole natural-duration source. Camera position/rotation defaults are zero and scale defaults to one.
+
+### BodyWorld camera contract
+
+Schema 2 keeps four camera decisions explicit and independent:
+
+- preserveGameplayCamera controls controller-swap and restore-seam continuity. It does not freeze normal locomotion camera movement.
+- stopOnGameplayCameraDisplacement controls the stance-aware displacement guard.
+- stabilizeLocalCameraPosition is an opt-in player-local position pin that preserves mouse-look rotation.
+- localCameraOwnedExternally declares that another presentation owns the local camera and visor, so the first-person camera/visor machinery stands down.
+
+Schema-1 migration preserves the old intent field by field. Ordinary weapon manifests that omitted stabilizeLocalCameraPosition remain unpinned. The legacy displacement-guard exemption does not enable or disable camera preservation, and localCameraOwnedExternally is never inferred from either setting.
 
 ## Compatibility window
 

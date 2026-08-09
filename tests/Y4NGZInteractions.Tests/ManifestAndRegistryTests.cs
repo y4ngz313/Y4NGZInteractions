@@ -53,9 +53,93 @@ public sealed class ManifestAndRegistryTests : IDisposable
         Assert.True(report.IsValid);
         Assert.Equal(2, manifest.schemaVersion);
         Assert.Equal("SampleRig", manifest.localViewmodel.prefabAssetName);
+        Assert.True(manifest.body.preserveGameplayCamera);
+        Assert.True(manifest.body.stopOnGameplayCameraDisplacement);
+        Assert.False(manifest.body.stabilizeLocalCameraPosition);
+        Assert.False(manifest.body.localCameraOwnedExternally);
         Assert.Contains(report.Issues, issue =>
             issue.Code == "manifest_schema_1_migrated" &&
             issue.Severity == InteractionAnimationValidationSeverity.Warning);
+    }
+
+    [Fact]
+    public void SchemaOneCameraSemanticsRetainIndependentLegacyIntent()
+    {
+        const string json = """
+        {
+          "schemaVersion": 1,
+          "interactionId": "camera-contract",
+          "exemptFromCameraDisplacementGuard": true,
+          "body": {
+            "enabled": true,
+            "stabilizeLocalCameraPosition": true,
+            "localCameraOwnedExternally": true
+          }
+        }
+        """;
+
+        InteractionAnimationValidationReport report =
+            InteractionAnimationManifestValidator.Parse(
+                json, out InteractionAnimationManifest manifest);
+
+        Assert.True(report.IsValid);
+        Assert.False(manifest.body.preserveGameplayCamera);
+        Assert.False(manifest.body.stopOnGameplayCameraDisplacement);
+        Assert.True(manifest.body.stabilizeLocalCameraPosition);
+        Assert.True(manifest.body.localCameraOwnedExternally);
+    }
+
+    [Fact]
+    public void SchemaOneOrdinaryWeaponDoesNotAcquireCameraPositionPinning()
+    {
+        const string json = """
+        {
+          "schemaVersion": 1,
+          "interactionId": "ordinary-weapon",
+          "body": {
+            "enabled": true,
+            "movementParameter": "MovementState"
+          }
+        }
+        """;
+
+        InteractionAnimationValidationReport report =
+            InteractionAnimationManifestValidator.Parse(
+                json, out InteractionAnimationManifest manifest);
+
+        Assert.True(report.IsValid);
+        Assert.True(manifest.body.preserveGameplayCamera);
+        Assert.True(manifest.body.stopOnGameplayCameraDisplacement);
+        Assert.False(manifest.body.stabilizeLocalCameraPosition);
+        Assert.False(manifest.body.localCameraOwnedExternally);
+    }
+
+    [Fact]
+    public void SchemaTwoCameraSemanticsRemainIndependent()
+    {
+        const string json = """
+        {
+          "schemaVersion": 2,
+          "interactionId": "explicit-camera-contract",
+          "body": {
+            "enabled": true,
+            "preserveGameplayCamera": false,
+            "stopOnGameplayCameraDisplacement": false,
+            "stabilizeLocalCameraPosition": true,
+            "localCameraOwnedExternally": false
+          }
+        }
+        """;
+
+        InteractionAnimationValidationReport report =
+            InteractionAnimationManifestValidator.Parse(
+                json, out InteractionAnimationManifest manifest);
+
+        Assert.True(report.IsValid);
+        Assert.False(manifest.body.preserveGameplayCamera);
+        Assert.False(manifest.body.stopOnGameplayCameraDisplacement);
+        Assert.True(manifest.body.stabilizeLocalCameraPosition);
+        Assert.False(manifest.body.localCameraOwnedExternally);
     }
 
     [Fact]
