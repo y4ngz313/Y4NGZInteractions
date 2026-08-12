@@ -4,6 +4,11 @@ Y4NGZ Interactions is a shared interaction-animation API for Lethal Company. It 
 
 This is a library for mod authors. It ships no animation payload of its own and adds no gameplay by itself; install it when another mod declares it as a dependency.
 
+## Installing (players)
+
+- Install with a mod manager (r2modman / Thunderstore Mod Manager) like any other mod; BepInExPack is pulled in automatically. For manual installs, place `Y4NGZInteractions.dll` in `BepInEx/plugins/`.
+- Built and verified against Lethal Company v81. A game update that changes the player rig or animator may require an updated release.
+
 ## What the API Provides
 
 - Registration of named animation packs and interactions from manifest JSON.
@@ -23,7 +28,7 @@ The public entry point is `LCInteractionAnimationAPI`.
 
 Source, documentation, and issues are available at [github.com/y4ngz313/Y4NGZInteractions](https://github.com/y4ngz313/Y4NGZInteractions).
 
-Declare a hard BepInEx dependency so the API initializes before your plugin:
+Add `y4ngz313-Y4NGZInteractions-1.0.0` to your Thunderstore manifest's dependencies, reference `Y4NGZInteractions.dll` at compile time (with `Private=false` so it is not copied into your plugin folder), and declare a hard BepInEx dependency so the API initializes before your plugin:
 
 ```csharp
 using System.IO;

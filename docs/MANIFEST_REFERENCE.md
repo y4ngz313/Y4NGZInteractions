@@ -110,7 +110,7 @@ An enabled clip pack requires a confined bundleFileName and at least one unique 
 "prop": {
   "enabled": true,
   "prefabAssetName": "ExampleProp",
-  "attachBonePath": "spine.004/shoulder.R/arm.R/forearm.R/hand.R",
+  "attachBonePath": "spine.003/shoulder.R/arm.R_upper/arm.R_lower/hand.R",
   "localPosition": { "x": 0, "y": 0, "z": 0 },
   "localEulerAngles": { "x": 0, "y": 0, "z": 0 },
   "localScale": 1,

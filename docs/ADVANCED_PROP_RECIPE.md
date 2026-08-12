@@ -10,11 +10,13 @@ Create an original prefab with its pivot at the intended grip reference. Apply s
 
 ## 2. Choose an attachment path
 
-Use the rig reference and validator to select an arms-metarig-relative bone path. A typical right-hand chain resembles:
+Use the rig reference and validator to select an arms-metarig-relative bone path. On the live arms metarig the right-hand chain is:
 
 ~~~text
-spine.004/shoulder.R/arm.R/forearm.R/hand.R
+spine.003/shoulder.R/arm.R_upper/arm.R_lower/hand.R
 ~~~
+
+The clean-room example content instead uses the proxy's simplified chain (`spine.004/shoulder.R/arm.R/forearm.R/hand.R`); that chain only exists on the example viewmodel, not on the live player rig. See the [Lethal Company Rig Reference](LETHAL_COMPANY_RIG_REFERENCE.md) for the verified live paths.
 
 Do not rely on a recursive leaf name when duplicate names may exist.
 
@@ -26,7 +28,7 @@ Start with zero local position/rotation and scale one. Adjust in small increment
 "prop": {
   "enabled": true,
   "prefabAssetName": "CommunityExampleProp",
-  "attachBonePath": "spine.004/shoulder.R/arm.R/forearm.R/hand.R",
+  "attachBonePath": "spine.003/shoulder.R/arm.R_upper/arm.R_lower/hand.R",
   "localPosition": { "x": 0, "y": 0, "z": 0 },
   "localEulerAngles": { "x": 0, "y": 0, "z": 0 },
   "localScale": 1,
