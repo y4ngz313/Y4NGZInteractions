@@ -14,14 +14,12 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
     internal sealed class LocalViewmodelPresenter : IInteractionPresenter
     {
         private const long SynchronousLoadSizeLimitBytes = 16L * 1024L * 1024L;
-        private const string SafeGeneratedRuntimeMaterialMode = "safeGenerated";
         private static readonly HashSet<string> PreloadingBundlePaths =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private static readonly Dictionary<string, AssetBundle> PreloadedBundles =
             new Dictionary<string, AssetBundle>(StringComparer.OrdinalIgnoreCase);
 
         private readonly List<RendererState> hiddenRenderers = new List<RendererState>();
-        private readonly List<Material> runtimeMaterials = new List<Material>();
         private InteractionAnimationContext context;
         private AssetBundle viewmodelBundle;
         private bool ownsViewmodelBundle;
@@ -31,12 +29,10 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private bool active;
         private bool exitRequested;
 
-        internal static void BeginPreload(
-            InteractionAnimationManifest manifest,
-            ManualLogSource logger)
-        {
-            TryBeginPreload(manifest, string.Empty, logger, out _);
-        }
+        public InteractionAnimationStopReason? RequestedStopReason => null;
+
+        public bool HasResourceOwnership => active && viewmodelRoot != null;
+
 
         internal static bool TryBeginPreload(
             InteractionAnimationManifest manifest,
@@ -96,6 +92,50 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             return true;
         }
 
+        public bool TryPreflight(InteractionAnimationContext context, out string reason)
+        {
+            reason = string.Empty;
+            if (context?.Manifest?.localViewmodel == null)
+            {
+                reason = "missing_viewmodel_manifest";
+                return false;
+            }
+
+            this.context = context;
+            InteractionAnimationManifest.LocalViewmodelManifest viewmodel =
+                context.Manifest.localViewmodel;
+            if (!TryLoadViewmodelBundle(context.Manifest, out reason))
+                return false;
+            GameObject prefab = viewmodelBundle.LoadAsset<GameObject>(
+                viewmodel.prefabAssetName);
+            if (prefab == null)
+            {
+                reason = "viewmodel.prefab_missing:" + viewmodel.prefabAssetName;
+                CleanupFailedStart();
+                return false;
+            }
+            if (viewmodelBundle.LoadAsset<RuntimeAnimatorController>(
+                    viewmodel.controllerAssetName) == null)
+            {
+                reason = "viewmodel.controller_missing:" + viewmodel.controllerAssetName;
+                CleanupFailedStart();
+                return false;
+            }
+            Camera camera;
+            if (ResolveCameraParent(out camera) == null)
+            {
+                reason = "viewmodel.camera_missing";
+                CleanupFailedStart();
+                return false;
+            }
+            if (prefab.transform.Find(viewmodel.cameraAnchorPath) == null)
+            {
+                reason = "viewmodel.camera_anchor_missing:" + viewmodel.cameraAnchorPath;
+                CleanupFailedStart();
+                return false;
+            }
+            return true;
+        }
         public bool TryStart(InteractionAnimationContext context, out string reason)
         {
             reason = string.Empty;
@@ -115,7 +155,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             this.context = context;
 
-            if (!TryLoadViewmodelBundle(manifest, out reason))
+            if (viewmodelBundle == null && !TryLoadViewmodelBundle(manifest, out reason))
                 return false;
 
             if (!TryInstantiateViewmodel(manifest, out reason))
@@ -134,8 +174,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             context.Logger?.LogInfo(
                 "[LCInteractionAnimationAPI] local_viewmodel.started: " +
                 $"handle={context.Handle} interaction='{manifest.interactionId}' " +
-                $"prefab='{manifest.localViewmodel.prefab}' controller='{manifest.localViewmodel.controller}' " +
-                $"socketProp='{manifest.sockets?.ResolvedProp ?? string.Empty}'.");
+                $"prefab='{manifest.localViewmodel.prefabAssetName}' controller='{manifest.localViewmodel.controllerAssetName}' " +
+                $"cameraAnchorPath='{manifest.localViewmodel.cameraAnchorPath}'.");
             return true;
         }
 
@@ -161,8 +201,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 $"handle={context.Handle} exitSeconds={exitSeconds:0.###}.");
             return exitSeconds;
         }
-
-        public bool ShouldAutoStop => false;
 
         public bool TrySetAnimatorParameter(string parameterName, UnityEngine.AnimatorControllerParameterType parameterType, float value)
         {
@@ -459,24 +497,24 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         {
             reason = string.Empty;
 
-            GameObject prefab = viewmodelBundle.LoadAsset<GameObject>(manifest.localViewmodel.prefab);
+            GameObject prefab = viewmodelBundle.LoadAsset<GameObject>(manifest.localViewmodel.prefabAssetName);
             if (prefab == null)
             {
-                reason = "viewmodel.prefab_missing:" + manifest.localViewmodel.prefab;
+                reason = "viewmodel.prefab_missing:" + manifest.localViewmodel.prefabAssetName;
                 context.Logger?.LogWarning(
                     "[LCInteractionAnimationAPI] viewmodel.prefab_missing: " +
-                    $"handle={context.Handle} prefab='{manifest.localViewmodel.prefab}'.");
+                    $"handle={context.Handle} prefab='{manifest.localViewmodel.prefabAssetName}'.");
                 return false;
             }
 
             viewmodelController = viewmodelBundle.LoadAsset<RuntimeAnimatorController>(
-                manifest.localViewmodel.controller);
+                manifest.localViewmodel.controllerAssetName);
             if (viewmodelController == null)
             {
-                reason = "viewmodel.controller_missing:" + manifest.localViewmodel.controller;
+                reason = "viewmodel.controller_missing:" + manifest.localViewmodel.controllerAssetName;
                 context.Logger?.LogWarning(
                     "[LCInteractionAnimationAPI] viewmodel.controller_missing: " +
-                    $"handle={context.Handle} controller='{manifest.localViewmodel.controller}'.");
+                    $"handle={context.Handle} controller='{manifest.localViewmodel.controllerAssetName}'.");
                 return false;
             }
 
@@ -492,9 +530,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             viewmodelRoot.name = "Y4NGZ_Viewmodel_" + SafeObjectName(manifest.interactionId);
             viewmodelRoot.transform.localPosition = Vector3.zero;
             viewmodelRoot.transform.localRotation = Quaternion.identity;
-            viewmodelRoot.transform.localScale = manifest.localViewmodel.localScale == Vector3.zero
-                ? Vector3.one
-                : manifest.localViewmodel.localScale;
+            viewmodelRoot.transform.localScale = manifest.localViewmodel.localScale.ToUnityVector3();
 
             if (!TryAlignViewmodelToCameraAnchor(manifest, out reason))
                 return false;
@@ -515,14 +551,10 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             EvaluateViewmodelRigBuilders();
 
             ApplyViewmodelRendererVisibility(manifest);
-            ApplyRuntimeSafeViewmodelMaterials(manifest);
             context.Logger?.LogInfo(
                 "[LCInteractionAnimationAPI] local_viewmodel.instantiated: " +
-                $"handle={context.Handle} prefab='{manifest.localViewmodel.prefab}' " +
-                $"controller='{manifest.localViewmodel.controller}' camera='{cameraParent.name}'.");
-            LogCameraDiagnostics(resolvedCamera, cameraParent, manifest);
-            LogRendererDiagnostics(resolvedCamera);
-            BeginPostFrameRendererDiagnostics(resolvedCamera);
+                $"handle={context.Handle} prefab='{manifest.localViewmodel.prefabAssetName}' " +
+                $"controller='{manifest.localViewmodel.controllerAssetName}' camera='{cameraParent.name}'.");
             return true;
         }
 
@@ -549,36 +581,32 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 return false;
             }
 
-            string anchorName = manifest.localViewmodel.cameraAnchor ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(anchorName))
+            string anchorPath = manifest.localViewmodel.cameraAnchorPath ?? string.Empty;
+            Transform anchor = viewmodelRoot.transform.Find(anchorPath);
+            if (anchor == null)
             {
-                reason = "viewmodel.camera_anchor_empty";
-                return false;
-            }
-
-            if (!TryFindChildRecursive(viewmodelRoot.transform, anchorName, out Transform anchor))
-            {
-                reason = "viewmodel.camera_anchor_missing:" + anchorName;
+                reason = "viewmodel.camera_anchor_missing:" + anchorPath;
                 context.Logger?.LogWarning(
                     "[LCInteractionAnimationAPI] local_viewmodel.anchor_missing: " +
-                    $"handle={context.Handle} anchor='{anchorName}'.");
+                    $"handle={context.Handle} anchorPath='{anchorPath}'.");
                 return false;
             }
 
             Vector3 anchorRootLocalPosition = viewmodelRoot.transform.InverseTransformPoint(anchor.position);
             Quaternion anchorRootLocalRotation =
                 Quaternion.Inverse(viewmodelRoot.transform.rotation) * anchor.rotation;
-            Quaternion targetLocalRotation = Quaternion.Euler(manifest.localViewmodel.cameraLocalEuler);
+            Quaternion targetLocalRotation = Quaternion.Euler(
+                manifest.localViewmodel.cameraLocalEuler.ToUnityVector3());
             viewmodelRoot.transform.localRotation =
                 targetLocalRotation * Quaternion.Inverse(anchorRootLocalRotation);
             Vector3 anchorOffset = viewmodelRoot.transform.localRotation *
                 Vector3.Scale(anchorRootLocalPosition, viewmodelRoot.transform.localScale);
             viewmodelRoot.transform.localPosition =
-                manifest.localViewmodel.cameraLocalPosition - anchorOffset;
+                manifest.localViewmodel.cameraLocalPosition.ToUnityVector3() - anchorOffset;
 
             context.Logger?.LogInfo(
                 "[LCInteractionAnimationAPI] local_viewmodel.anchor_aligned: " +
-                $"handle={context.Handle} anchor='{anchorName}' path='{GetTransformPath(anchor)}' " +
+                $"handle={context.Handle} anchorPath='{anchorPath}' path='{GetTransformPath(anchor)}' " +
                 $"anchorRootLocalPosition={FormatVector(anchorRootLocalPosition)} " +
                 $"anchorRootLocalEuler={FormatVector(anchorRootLocalRotation.eulerAngles)} " +
                 $"targetLocalPosition={FormatVector(manifest.localViewmodel.cameraLocalPosition)} " +
@@ -624,7 +652,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 $"rootActive={viewmodelRoot.activeSelf} rootActiveInHierarchy={viewmodelRoot.activeInHierarchy} " +
                 $"rootLayer={viewmodelRoot.layer} rootLayerVisible={rootLayerVisible} " +
                 $"rootLocalPosition={FormatVector(viewmodelRoot.transform.localPosition)} " +
-                $"manifestCameraAnchor='{manifest.localViewmodel.cameraAnchor}' " +
+                $"manifestCameraAnchor='{manifest.localViewmodel.cameraAnchorPath}' " +
                 $"manifestLocalPosition={FormatVector(manifest.localViewmodel.cameraLocalPosition)} " +
                 $"rootLocalEuler={FormatVector(viewmodelRoot.transform.localEulerAngles)} " +
                 $"manifestLocalEuler={FormatVector(manifest.localViewmodel.cameraLocalEuler)} " +
@@ -720,124 +748,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             }
         }
 
-        private void ApplyRuntimeSafeViewmodelMaterials(InteractionAnimationManifest manifest)
-        {
-            if (!ShouldApplyRuntimeSafeViewmodelMaterials(manifest) || viewmodelRoot == null)
-                return;
-
-            Renderer[] renderers = viewmodelRoot.GetComponentsInChildren<Renderer>(true);
-            for (int i = 0; i < renderers.Length; i++)
-            {
-                Renderer renderer = renderers[i];
-                if (renderer == null ||
-                    !TryGetRuntimeMaterialTarget(manifest, renderer, out string target, out Color color))
-                {
-                    continue;
-                }
-
-                Material material = CreateRuntimeSafeMaterial(renderer.name, color);
-                if (material == null)
-                    continue;
-
-                runtimeMaterials.Add(material);
-                Material[] materials = renderer.sharedMaterials;
-                if (materials == null || materials.Length == 0)
-                {
-                    renderer.sharedMaterial = material;
-                }
-                else
-                {
-                    for (int materialIndex = 0; materialIndex < materials.Length; materialIndex++)
-                        materials[materialIndex] = material;
-
-                    renderer.sharedMaterials = materials;
-                }
-
-                renderer.enabled = true;
-                context.Logger?.LogInfo(
-                    "[LCInteractionAnimationAPI] local_viewmodel.runtime_material_applied: " +
-                    $"handle={context.Handle} target='{target}' renderer='{GetTransformPath(renderer.transform)}' " +
-                    $"material='{material.name}' shader='{SafeName(material.shader)}' color={FormatColor(color)}.");
-            }
-        }
-
-        private static bool ShouldApplyRuntimeSafeViewmodelMaterials(InteractionAnimationManifest manifest)
-        {
-            return manifest?.localViewmodel != null &&
-                string.Equals(
-                    manifest.localViewmodel.runtimeMaterialMode,
-                    SafeGeneratedRuntimeMaterialMode,
-                    StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static bool TryGetRuntimeMaterialTarget(
-            InteractionAnimationManifest manifest,
-            Renderer renderer,
-            out string target,
-            out Color color)
-        {
-            target = string.Empty;
-            color = Color.white;
-
-            if (manifest == null || renderer == null)
-                return false;
-
-            if (manifest.sockets != null &&
-                !string.IsNullOrWhiteSpace(manifest.sockets.ResolvedProp) &&
-                string.Equals(renderer.name, manifest.sockets.ResolvedProp, StringComparison.OrdinalIgnoreCase))
-            {
-                target = "prop";
-                color = new Color(0.56f, 0.6f, 0.44f, 1f);
-                return true;
-            }
-
-            if (manifest.localViewmodel != null &&
-                ShouldHide(manifest.localViewmodel.visibleRenderers, renderer.name))
-            {
-                target = "visible_viewmodel";
-                color = new Color(0.95f, 0.5f, 0.18f, 1f);
-                return true;
-            }
-
-            return false;
-        }
-
-        private static Material CreateRuntimeSafeMaterial(string rendererName, Color color)
-        {
-            Shader shader = Shader.Find("Unlit/Color");
-            if (shader == null)
-                shader = Shader.Find("Sprites/Default");
-            if (shader == null)
-                shader = Shader.Find("Standard");
-            if (shader == null)
-                return null;
-
-            var material = new Material(shader)
-            {
-                name = "Y4NGZ_RuntimeViewmodel_" + SafeObjectName(rendererName)
-            };
-
-            if (material.HasProperty("_Color"))
-                material.color = color;
-
-            if (material.HasProperty("_BaseColor"))
-                material.SetColor("_BaseColor", color);
-
-            if (material.HasProperty("_EmissionColor"))
-            {
-                Color emissionColor = new Color(
-                    Mathf.Min(color.r * 0.35f, 1f),
-                    Mathf.Min(color.g * 0.35f, 1f),
-                    Mathf.Min(color.b * 0.35f, 1f),
-                    color.a);
-                material.EnableKeyword("_EMISSION");
-                material.SetColor("_EmissionColor", emissionColor);
-            }
-
-            material.renderQueue = 2000;
-            return material;
-        }
-
         private void LogRendererMaterials(Renderer renderer, int rendererIndex, Material[] materials)
         {
             if (context?.Logger == null)
@@ -876,10 +786,12 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 if (renderer == null)
                     continue;
 
-                if (ShouldHide(manifest.localViewmodel.hideSourceRenderers, renderer.name))
+                string rendererPath = GetRelativeTransformPath(
+                    viewmodelRoot.transform, renderer.transform);
+                if (ShouldHide(manifest.localViewmodel.prefabRenderersToHide, rendererPath))
                     renderer.enabled = false;
 
-                if (ShouldHide(manifest.localViewmodel.visibleRenderers, renderer.name))
+                if (ShouldHide(manifest.localViewmodel.prefabRenderersToShow, rendererPath))
                     renderer.enabled = true;
             }
         }
@@ -889,12 +801,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             if (context?.Request?.Player == null || context.Manifest == null)
                 return;
 
-            string[] rendererHints = context.Manifest.liveRenderersToHide ?? Array.Empty<string>();
-            if (!ShouldHide(rendererHints, "thisPlayerModelArms") &&
-                !ShouldHide(rendererHints, "lc_first_person_hands"))
-            {
+            if (!context.Manifest.localViewmodel.hideVanillaFirstPersonArms)
                 return;
-            }
 
             Renderer renderer = context.Request.Player.thisPlayerModelArms;
             if (renderer == null)
@@ -915,25 +823,12 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
         private void DestroyViewmodel()
         {
-            DestroyRuntimeMaterials();
-
             if (viewmodelRoot != null)
                 Object.Destroy(viewmodelRoot);
 
             viewmodelRoot = null;
             viewmodelAnimator = null;
             viewmodelController = null;
-        }
-
-        private void DestroyRuntimeMaterials()
-        {
-            for (int i = runtimeMaterials.Count - 1; i >= 0; i--)
-            {
-                if (runtimeMaterials[i] != null)
-                    Object.Destroy(runtimeMaterials[i]);
-            }
-
-            runtimeMaterials.Clear();
         }
 
         private void ReleaseViewmodelBundle()
@@ -1001,7 +896,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             return InteractionAnimationAssetPathResolver.TryResolveBundlePath(
                 bundleFileName,
                 assetRootPath,
-                InteractionAnimationAssetPathResolver.GetDefaultAssetRoots(),
                 out resolvedPath,
                 out reason);
         }
@@ -1061,6 +955,25 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             }
         }
 
+        private static string GetRelativeTransformPath(Transform root, Transform transform)
+        {
+            if (root == null || transform == null)
+                return string.Empty;
+            if (ReferenceEquals(root, transform))
+                return string.Empty;
+
+            var names = new List<string>();
+            Transform current = transform;
+            while (current != null && !ReferenceEquals(current, root))
+            {
+                names.Add(current.name);
+                current = current.parent;
+            }
+            if (current == null)
+                return string.Empty;
+            names.Reverse();
+            return string.Join("/", names.ToArray());
+        }
         private static string GetTransformPath(Transform transform)
         {
             if (transform == null)
@@ -1084,6 +997,15 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         }
 
         private static string FormatVector(Vector3 value)
+        {
+            return "(" +
+                   FormatFloat(value.x) + "," +
+                   FormatFloat(value.y) + "," +
+                   FormatFloat(value.z) + ")";
+        }
+
+        private static string FormatVector(
+            InteractionAnimationVector3 value)
         {
             return "(" +
                    FormatFloat(value.x) + "," +

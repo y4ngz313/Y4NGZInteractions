@@ -1,0 +1,17 @@
+{
+  "name": "Y4NGZInteractions.Examples.EditorTests",
+  "rootNamespace": "Y4NGZInteractions.Examples.EditorTests",
+  "references": [
+    "Y4NGZInteractions.Examples.Editor"
+  ],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": ["UNITY_INCLUDE_TESTS"],
+  "versionDefines": [],
+  "noEngineReferences": false,
+  "optionalUnityReferences": ["TestAssemblies"]
+}

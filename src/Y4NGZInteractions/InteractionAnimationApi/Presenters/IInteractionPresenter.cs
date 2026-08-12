@@ -2,6 +2,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 {
     internal interface IInteractionPresenter
     {
+        bool TryPreflight(InteractionAnimationContext context, out string reason);
         bool TryStart(InteractionAnimationContext context, out string reason);
         void Tick(float deltaTime);
         void Stop(InteractionAnimationStopReason stopReason);
@@ -16,7 +17,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         /// True when the presenter wants the interaction stopped immediately (e.g. the player
         /// entered a vanilla special animation like a ladder or the ship lever, or died).
         /// </summary>
-        bool ShouldAutoStop { get; }
+        InteractionAnimationStopReason? RequestedStopReason { get; }
+
+        bool HasResourceOwnership { get; }
 
         /// <summary>
         /// Generic animator parameter passthrough for consuming mods (e.g. action gestures).

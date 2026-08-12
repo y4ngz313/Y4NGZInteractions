@@ -1,147 +1,123 @@
 # Y4NGZInteractions
 
-A consumer-agnostic **interaction animation API** for Lethal Company. It is a BepInEx 5
-plugin (`Y4NGZInteractions.dll`, GUID `com.y4ngz.interactions`) that other mods depend on in
-order to play authored animations on the player without each of them fighting over the same
-animator, rig, and camera.
+Last updated: 2026-08-08
 
-A consuming mod registers an *interaction pack*: a small JSON manifest plus its own Unity
-AssetBundles, shipped in its own plugin folder. At runtime it asks the API to start an
-interaction for a specific `PlayerControllerB`. The API loads the bundle, applies the authored
-controller (wrapped in an `AnimatorOverrideController` when a clip pack supplies the clips),
-optionally attaches a prop to a hand bone, drives animator parameters on the consumer's behalf,
-and — the part that is genuinely hard — puts the player, rig, camera, and visor back exactly
-where vanilla expects them when the interaction ends.
+Y4NGZInteractions is a consumer-agnostic, local animation presentation API for Lethal Company mods. It owns presentation resources for the lifetime of an interaction, plays a consumer-authored controller or viewmodel, and restores the affected player, camera, arms, rig, and prop state when the interaction ends.
 
-Two presentation kinds are available. `BodyWorld` (the production path) swaps the controller on
-`playerBodyAnimator`, so the animation is visible in first person **and** to other players in
-third person. `DedicatedLocalViewmodel` instantiates a consumer-owned prefab parented to the
-local gameplay camera, for interactions that need to be isolated from the live player rig; it is
-local-only and never seen by anyone else. The API ships **no animations of its own** — it is a
-library, and every clip, controller, prop, and manifest belongs to the mod that uses it.
+It is not a networking service and it does not retarget animations at runtime. Every client that should see an interaction must receive that fact through networking owned by the consuming mod and invoke the API locally.
 
-Honest limitations: the API is a strictly **local presentation layer**. It sends no RPCs and
-replicates nothing — making an interaction visible on other clients is the consumer's job (see
-[the networking contract](docs/GETTING_STARTED.md#the-networking-contract)). Animation content
-must be authored against Lethal Company's player rig; there is no retargeting service here. And
-only one `BodyWorld` session may own a given player at a time — starting a second interrupts the
-first.
+## Choose a presentation
 
-## Install
+| Presentation | Use it when | Authoring requirement |
+| --- | --- | --- |
+| BodyWorld | Other players must see the animation, or the local body must animate in world space | Controller and clips authored for the supported Lethal Company player hierarchy |
+| DedicatedLocalViewmodel | Only the local player needs a camera-space rig | Any self-contained consumer-authored prefab, controller, rig, and clips |
 
-**Players.** Install from Thunderstore with your mod manager, or drop the plugin folder into
-your BepInEx profile's `BepInEx/plugins` directory. On its own it changes nothing in game; it is
-a dependency of the mods that use it.
+A local BodyWorld session owns both the body animator and local camera/arms presentation. A remote BodyWorld session owns only that remote player's body animator. A DedicatedLocalViewmodel session owns the local camera/arms presentation and is rejected for remote players.
 
-**Mod authors.** Reference the assembly (`Y4NGZInteractions.dll` from a release, or a
-`ProjectReference` to `src/Y4NGZInteractions/Y4NGZInteractions.csproj`) and declare a hard
-dependency so BepInEx initialises the API before your plugin's `Awake`:
+## Five-minute orientation
 
-```csharp
-using BepInEx;
-using GameNetcodeStuff;
-using System.IO;
-using Y4NGZInteractions.InteractionAnimationApi;
+1. Install or build Y4NGZInteractions.
+2. Run the supplied sample before writing integration code: see [Getting Started](docs/GETTING_STARTED.md).
+3. Build the two clean-room bundles with the pinned Unity example project.
+4. Build the sample BepInEx consumer and copy its output plus the example bundles to a clean profile.
+5. Use the sample hotkeys to exercise BodyWorld and DedicatedLocalViewmodel.
+6. Copy the registration/start pattern into your mod and replace the sample payload.
 
-[BepInPlugin("com.example.mymod", "MyMod", "1.0.0")]
-[BepInDependency("com.y4ngz.interactions", BepInDependency.DependencyFlags.HardDependency)]
-public sealed class MyModPlugin : BaseUnityPlugin
+The smallest registration looks like this:
+
+~~~csharp
+var pack = new InteractionAnimationPackDefinition
 {
-    private void Awake()
+    PackId = "example.interactions",
+    Version = "1.0.0",
+    AssetRootPath = assetDirectory,
+    Interactions = new[]
     {
-        string myPluginDir = Path.GetDirectoryName(typeof(MyModPlugin).Assembly.Location);
-
-        var pack = new InteractionAnimationPackDefinition
+        new InteractionAnimationDefinition
         {
-            PackId = "com.example.mymod",
-            // Always set this: it is where YOUR bundles live, and it confines bundle
-            // resolution to your own folder. Omitting it makes the resolver probe the
-            // API's folders instead, and your bundles will not be found.
-            AssetRootPath = myPluginDir,
-            Interactions = new[]
-            {
-                new InteractionAnimationDefinition
-                {
-                    InteractionId = "com.example.mymod.lantern",
-                    PresentationKind = InteractionAnimationPresentationKind.BodyWorld,
-                    ManifestJson = File.ReadAllText(
-                        Path.Combine(myPluginDir, "lantern-livebody.manifest.json"))
-                }
-            }
-        };
-
-        if (!LCInteractionAnimationAPI.TryRegisterInteractionPack(pack, out string reason))
-            Logger.LogError($"pack registration failed: {reason}");
-    }
-
-    // Call this on EVERY client for the player who should be animated.
-    public void PlayLantern(PlayerControllerB player)
-    {
-        var request = new InteractionAnimationRequest
-        {
-            Player = player,
-            PackId = "com.example.mymod",
-            InteractionId = "com.example.mymod.lantern",
-            OwnerModId = "com.example.mymod"
-        };
-
-        if (LCInteractionAnimationAPI.TryStartInteraction(
-                request, out InteractionAnimationHandle handle, out string reason))
-        {
-            // Keep `handle`: it drives parameters and ends the interaction.
+            InteractionId = "wave",
+            PresentationKind = InteractionAnimationPresentationKind.BodyWorld,
+            ManifestJson = File.ReadAllText(manifestPath)
         }
     }
-}
-```
+};
 
-If you would rather integrate optionally, the API can also be driven by reflection as a soft
-dependency — see [Getting Started](docs/GETTING_STARTED.md#soft-optional-dependency).
+if (!LCInteractionAnimationAPI.TryRegisterInteractionPack(pack, out string reason))
+    Logger.LogError(reason);
+~~~
+
+Starting is handle-scoped and rejects conflicts unless interruption is explicitly requested:
+
+~~~csharp
+var request = new InteractionAnimationRequest
+{
+    Player = targetPlayer,
+    PackId = "example.interactions",
+    InteractionId = "wave",
+    ConflictPolicy = InteractionAnimationConflictPolicy.RejectIfBusy
+};
+
+if (LCInteractionAnimationAPI.TryStartInteraction(
+        request, out InteractionAnimationHandle handle, out string reason))
+{
+    activeHandle = handle;
+}
+~~~
+
+Subscribe to InteractionEnded when your consumer needs an authoritative local completion notification. The event fires exactly once after restoration and lease release.
+
+## Important limitations
+
+- Networking belongs to the consuming mod. The repository example shows a minimal named-message broadcast.
+- Runtime retargeting is outside the API. Unity Humanoid, manual keyframe transfer, custom scripts, and DCC workflows are all valid inputs if their output passes validation.
+- BodyWorld clips must match the supported player hierarchy and controller contract.
+- DedicatedLocalViewmodel content is local-player-only.
+- The API accepts schema-1 JSON through a migration path during the 1.x line, but new content must use strict schema 2.
+- Unknown schema-2 fields and unsafe bundle or transform paths are errors.
+- The public C# surface is frozen by a checked analyzer baseline. Public signature changes require a deliberate compatibility decision.
 
 ## Documentation
 
-| Document | What it covers |
-|---|---|
-| [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) | End-to-end integration: project setup, the artefacts you need, registration, driving and ending an interaction, networking, troubleshooting |
-| [docs/API_REFERENCE.md](docs/API_REFERENCE.md) | Every public method, type, and enum; handle lifetime; preload; the full failure-reason catalogue |
-| [docs/MANIFEST_REFERENCE.md](docs/MANIFEST_REFERENCE.md) | Complete manifest schema, field by field, with annotated examples |
-| [docs/README.md](docs/README.md) | Index of the rest of the documentation, including maintainer-facing notes |
+- [Getting Started](docs/GETTING_STARTED.md)
+- [Authoring Guide](docs/AUTHORING_GUIDE.md)
+- [API Reference](docs/API_REFERENCE.md)
+- [Manifest Reference](docs/MANIFEST_REFERENCE.md)
+- [Lethal Company Rig Reference](docs/LETHAL_COMPANY_RIG_REFERENCE.md)
+- [Advanced Prop Recipe](docs/ADVANCED_PROP_RECIPE.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [1.0 Migration Guide](docs/MIGRATION_1_0.md)
 
-## Build from source
+## Build and verify
 
-Requires the .NET SDK and a Lethal Company installation (the build resolves
-`Unity.InputSystem.dll` from the game's `Managed` directory).
+A clean build uses public package sources and does not require a local game installation:
 
-```powershell
-dotnet build .\src\Y4NGZInteractions\Y4NGZInteractions.csproj -c Release
-```
+~~~powershell
+dotnet restore Y4NGZInteractions.slnx
+dotnet build Y4NGZInteractions.slnx -c Release --no-restore
+dotnet test Y4NGZInteractions.slnx -c Release --no-build
+powershell -ExecutionPolicy Bypass -File scripts/test-player-animation-api-static-regressions.ps1
+powershell -ExecutionPolicy Bypass -File scripts/test-public-tree.ps1
+powershell -ExecutionPolicy Bypass -File scripts/test-markdown-links.ps1
+powershell -ExecutionPolicy Bypass -File release/stage-y4ngz-interactions.ps1 -SkipBuild
+~~~
 
-Two MSBuild properties cover non-default installs:
+Release builds do not deploy automatically. For an explicit local developer deployment, set both EnableProfileDeploy=true and DeployTarget to the intended plugin directory.
 
-- `GameManagedDir` — path to `Lethal Company_Data\Managed`. Defaults to the Steam location.
-- `TestProfileRoot` — the BepInEx profile a `Release` build deploys into. `BepInExPlugins` and
-  `DeployTarget` derive from it, and either can be overridden directly instead.
+## Package contents
 
-```powershell
-dotnet build .\src\Y4NGZInteractions\Y4NGZInteractions.csproj -c Release `
-  -p:GameManagedDir="D:\Games\Lethal Company\Lethal Company_Data\Managed" `
-  -p:DeployTarget="D:\profiles\dev\BepInEx\plugins\Y4NGZInteractions"
-```
+The Thunderstore package contains only:
 
-Static regression checks live in `scripts/` and run with PowerShell, for example:
+- Y4NGZInteractions.dll
+- icon.png
+- README.md
+- LICENSE
+- CHANGELOG.md
+- manifest.json
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-interaction-animation-api-v2-static-regressions.ps1
-```
-
-## Status
-
-Pre-1.0. The public surface is treated as stable in intent — three mods depend on it — but it
-may still evolve before 1.0.0, and breaking changes are announced in
-[CHANGELOG.md](CHANGELOG.md). Bugs and integration questions belong in
-[Issues](https://github.com/y4ngz313/Y4NGZInteractions/issues); include `BepInEx/LogOutput.log`,
-the interaction id, the presentation kind, and whether the problem affected the local or a
-remote player.
+Examples, authoring projects, tests, source assets, and generated animation bundles remain repository-only.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Code and original example assets are available under the [MIT License](LICENSE).

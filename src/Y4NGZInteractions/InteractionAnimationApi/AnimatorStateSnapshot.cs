@@ -153,6 +153,12 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 restoreBaseLayerState: true);
         }
 
+        /// <param name="animator">Animator whose captured state is restored.</param>
+        /// <param name="expectedCurrentController">
+        /// Controller that must still be owned before restoration proceeds.
+        /// </param>
+        /// <param name="rebindAnimator">Whether to rebind before replaying captured state.</param>
+        /// <param name="restoreMode">Controls which captured layers and transitions replay.</param>
         /// <param name="syncParametersBeforeStateReplay">
         /// Invoked after the captured parameters are rewritten but BEFORE any forced state
         /// replay and the zero-delta Animator.Update. Lets the caller overwrite stale

@@ -2,4 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/Y4NGZInteractions/Y4NGZInteractions.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Y4NGZInteractions.Tests/Y4NGZInteractions.Tests.csproj" />
+  </Folder>
 </Solution>
