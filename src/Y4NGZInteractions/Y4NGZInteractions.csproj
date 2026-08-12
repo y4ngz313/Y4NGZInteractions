@@ -19,6 +19,17 @@
       https://nuget.bepinex.dev/v3/index.json;
       https://nuget.samboy.dev/v3/index.json
     </RestoreAdditionalProjectSources>
+    <!-- Local playtest profile. Derived from the environment so no machine-specific path is
+         checked in; override TestProfileRoot (or DeployTarget) to deploy elsewhere. -->
+    <TestProfileRoot Condition="'$(TestProfileRoot)' == ''">$(AppData)\com.kesomannen.gale\lethal-company\profiles\Current</TestProfileRoot>
+    <BepInExPlugins Condition="'$(BepInExPlugins)' == ''">$(TestProfileRoot)\BepInEx\plugins</BepInExPlugins>
+    <!-- A mod manager names a locally imported package's plugin directory after the package,
+         so a re-imported profile holds `Y4NGZInteractions` where an older one holds the
+         hand-made `y4ngz-Y4NGZInteractions`. Deploying into the directory the profile does not
+         load from is silent: BepInEx keeps running the other copy and the build looks applied.
+         Prefer the directory that exists, newest layout first. -->
+    <DeployTarget Condition="'$(DeployTarget)' == '' and Exists('$(BepInExPlugins)\Y4NGZInteractions')">$(BepInExPlugins)\Y4NGZInteractions</DeployTarget>
+    <DeployTarget Condition="'$(DeployTarget)' == ''">$(BepInExPlugins)\y4ngz-Y4NGZInteractions</DeployTarget>
   </PropertyGroup>
 
   <ItemGroup>
