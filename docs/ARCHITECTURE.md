@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-08-08
+Last updated: 2026-08-11
 
 This document records only current 1.0 invariants.
 
@@ -33,6 +33,8 @@ Before one immutable InteractionEnded event is raised, presenter-owned state has
 ## External ownership
 
 BodyWorld never blindly replaces an animator controller. The presenter may take ownership only from the expected vanilla controller or from a conflicting API session that currently proves resource ownership.
+
+Before vanilla multiplayer animation sync samples the live animator, the runtime ensures the game's current and previous state-hash lists contain one slot per active animator layer. It preserves existing hashes and only appends missing slots, so a BodyWorld controller with additional layers cannot interrupt vanilla locomotion replication.
 
 ## Restoration
 

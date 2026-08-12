@@ -47,4 +47,22 @@ foreach ($term in $required) {
     }
 }
 
+$syncGuardPath = Join-Path $sourceRoot "InteractionAnimationApi/PlayerAnimationSyncStateGuardPatch.cs"
+if (-not (Test-Path -LiteralPath $syncGuardPath)) {
+    throw "Multiplayer animation sync state guard is missing."
+}
+$syncGuardSource = Get-Content -LiteralPath $syncGuardPath -Raw
+$syncGuardRequired = @(
+    '[HarmonyPatch(typeof(PlayerControllerB), "UpdatePlayerAnimationsToOtherClients")]',
+    'ref List<int> ___currentAnimationStateHash',
+    'ref List<int> ___previousAnimationStateHash',
+    '__instance?.playerBodyAnimator?.layerCount',
+    'while (states.Count < requiredCount)'
+)
+foreach ($term in $syncGuardRequired) {
+    if (-not $syncGuardSource.Contains($term)) {
+        throw "Multiplayer animation sync guard term is missing: $term"
+    }
+}
+
 Write-Output "Static API/package guard passed."
