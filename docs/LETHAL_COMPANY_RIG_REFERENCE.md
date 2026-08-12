@@ -1,6 +1,6 @@
 # Lethal Company Rig Reference
 
-Last updated: 2026-08-08
+Last updated: 2026-08-09
 
 BodyWorld plays a controller on the live PlayerControllerB body animator. Clips must therefore be authored for the supported hierarchy and binding paths. No particular retargeting tool is required.
 
@@ -35,7 +35,7 @@ Layer weights are restored from the captured animator snapshot. startLayerWeight
 
 A remote BodyWorld session owns only that player's body animator. A local BodyWorld session also owns the local camera/arms presentation and applies the restoration seam needed for viewpoint, arms, visor, rig-builder, and scoped transform recovery.
 
-preserveGameplayCamera is semantic: keep the gameplay camera stable through controller swaps and rebinds. stopOnVanillaSpecialAnimation requests interruption when the base game enters a conflicting special-animation state.
+preserveGameplayCamera keeps camera continuity through controller swaps and rebinds without freezing vanilla locomotion movement. stopOnGameplayCameraDisplacement independently enables the stance-aware safety guard. stabilizeLocalCameraPosition is a separate opt-in position pin, and localCameraOwnedExternally is the separate ownership declaration that makes first-person camera and visor behavior stand down. stopOnVanillaSpecialAnimation requests interruption when the base game enters a conflicting special-animation state.
 
 ## Rig builders
 

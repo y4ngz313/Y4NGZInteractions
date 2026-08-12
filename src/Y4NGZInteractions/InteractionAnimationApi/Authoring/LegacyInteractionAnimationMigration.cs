@@ -66,9 +66,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Authoring
                     rebuildRigBuilders = !oldBody.suppressRigBuilders,
                     exitSeconds = oldBody.exitSeconds,
                     movementParameter = oldBody.movementParameter ?? string.Empty,
-                    preserveGameplayCamera =
-                        !legacy.exemptFromCameraDisplacementGuard &&
-                        !oldBody.localCameraOwnedExternally,
+                    preserveGameplayCamera = !oldBody.localCameraOwnedExternally,
+                    stopOnGameplayCameraDisplacement =
+                        !legacy.exemptFromCameraDisplacementGuard,
+                    stabilizeLocalCameraPosition =
+                        oldBody.stabilizeLocalCameraPosition,
+                    localCameraOwnedExternally =
+                        oldBody.localCameraOwnedExternally,
                     stopOnVanillaSpecialAnimation =
                         !legacy.exemptFromSpecialAnimationAutoStop,
                     clipPack = new InteractionAnimationManifest.ClipPackManifest
@@ -80,6 +84,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Authoring
                     },
                     prop = new InteractionAnimationManifest.PropManifest
                     {
+                        useLegacyRecursiveAttachBoneLookup = true,
                         enabled = oldProp.enabled,
                         prefabAssetName = oldProp.prefabName ?? string.Empty,
                         attachBonePath = oldProp.attachBone ?? string.Empty,

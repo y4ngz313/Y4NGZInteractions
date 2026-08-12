@@ -1,6 +1,6 @@
 # Manifest Reference
 
-Last updated: 2026-08-08
+Last updated: 2026-08-09
 
 New content uses strict schema version 2. Field names are exact and case-sensitive; unknown or duplicate fields are errors. Every validation issue identifies a stable code and JSON path.
 
@@ -70,6 +70,9 @@ Camera position and rotation default to zero. Scale defaults to one. cameraAncho
     "exitSeconds": 0.2,
     "movementParameter": "MovementState",
     "preserveGameplayCamera": true,
+    "stopOnGameplayCameraDisplacement": true,
+    "stabilizeLocalCameraPosition": false,
+    "localCameraOwnedExternally": false,
     "stopOnVanillaSpecialAnimation": true,
     "clipPack": { "enabled": false, "overrides": [] },
     "prop": { "enabled": false }
@@ -77,7 +80,14 @@ Camera position and rotation default to zero. Scale defaults to one. cameraAncho
 }
 ~~~
 
-preserveGameplayCamera and stopOnVanillaSpecialAnimation default to true. Scoped transform restoration is automatic.
+preserveGameplayCamera, stopOnGameplayCameraDisplacement, and stopOnVanillaSpecialAnimation default to true. stabilizeLocalCameraPosition and localCameraOwnedExternally default to false. Scoped transform restoration is automatic.
+
+The camera fields have separate meanings:
+
+- preserveGameplayCamera keeps camera transform continuity across controller swaps, rebinds, and restoration. It does not pin the camera during normal play.
+- stopOnGameplayCameraDisplacement enables the stance-aware safety guard and stops a session after sustained authored displacement.
+- stabilizeLocalCameraPosition explicitly pins only the gameplay camera's player-local position for the session while leaving mouse-look rotation live. Use it only when the authored controller temporarily moves a camera parent.
+- localCameraOwnedExternally declares that another system owns the local camera and visor. That explicit ownership declaration makes the presenter's first-person camera and visor behavior stand down; the other three field values are not treated as ownership signals.
 
 ## Clip packs
 
@@ -117,5 +127,7 @@ Bundle paths must be trimmed, relative, slash-separated, and confined to AssetRo
 ## Schema-1 compatibility
 
 Schema-1 JSON is parsed through an internal compatibility DTO, normalized to schema 2, and accepted for the 1.x line with warning manifest_schema_1_migrated. Legacy-only fields never appear on the public schema-2 DTO.
+
+Migration maps legacy stabilizeLocalCameraPosition and localCameraOwnedExternally directly, maps exemptFromCameraDisplacementGuard to the inverse of stopOnGameplayCameraDisplacement, and preserves camera seams unless the legacy manifest explicitly declared external camera ownership. A schema-1 consumer that omitted stabilization does not acquire a position pin.
 
 Schema 2 removes frameRate, root displayName, localViewmodel.root, runtimeMaterialMode, sockets, body.clip, diagnostic override fields, validation metadata, and low-level restoration toggles. See [1.0 Migration Guide](MIGRATION_1_0.md).

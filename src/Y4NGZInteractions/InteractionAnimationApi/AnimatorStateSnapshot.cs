@@ -70,7 +70,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     layers[i] = new LayerSnapshot(
                         stateInfo.fullPathHash,
                         stateInfo.normalizedTime,
-                        animator.GetLayerWeight(i));
+                        animator.GetLayerWeight(i),
+                        animator.IsInTransition(i));
                 }
 
                 AnimatorControllerParameter[] animatorParameters = animator.parameters ?? Array.Empty<AnimatorControllerParameter>();
@@ -114,6 +115,41 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             }
 
             return reapplied;
+        }
+
+        /// <summary>
+        /// Replays one captured layer onto the animator's CURRENT controller when that
+        /// controller carries the same state. Live-body shell controllers retain vanilla's
+        /// base layer, so this preserves a settled stance across the swap instead of
+        /// evaluating one frame in the controller's default standing state. In-progress
+        /// transitions fail closed to the presenter's vanilla-trigger fallback.
+        /// </summary>
+        public bool TryReapplyLayerState(Animator animator, int layerIndex)
+        {
+            if (animator == null || layerIndex < 0 ||
+                layerIndex >= layers.Length || layerIndex >= animator.layerCount)
+            {
+                return false;
+            }
+
+            try
+            {
+                LayerSnapshot layer = layers[layerIndex];
+                if (layer.InTransition ||
+                    layer.FullPathHash == 0 ||
+                    !animator.HasState(layerIndex, layer.FullPathHash))
+                {
+                    return false;
+                }
+
+                animator.SetLayerWeight(layerIndex, layer.Weight);
+                animator.Play(layer.FullPathHash, layerIndex, layer.NormalizedTime);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         public bool Restore(Animator animator)
@@ -254,12 +290,18 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             public readonly int FullPathHash;
             public readonly float NormalizedTime;
             public readonly float Weight;
+            public readonly bool InTransition;
 
-            public LayerSnapshot(int fullPathHash, float normalizedTime, float weight)
+            public LayerSnapshot(
+                int fullPathHash,
+                float normalizedTime,
+                float weight,
+                bool inTransition)
             {
                 FullPathHash = fullPathHash;
                 NormalizedTime = normalizedTime;
                 Weight = weight;
+                InTransition = inTransition;
             }
         }
 

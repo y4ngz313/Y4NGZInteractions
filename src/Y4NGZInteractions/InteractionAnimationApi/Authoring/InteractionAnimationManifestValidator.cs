@@ -220,6 +220,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Authoring
                 "exitSeconds",
                 "movementParameter",
                 "preserveGameplayCamera",
+                "stopOnGameplayCameraDisplacement",
+                "stabilizeLocalCameraPosition",
+                "localCameraOwnedExternally",
                 "stopOnVanillaSpecialAnimation",
                 "clipPack",
                 "prop");

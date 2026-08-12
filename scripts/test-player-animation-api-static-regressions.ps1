@@ -23,7 +23,8 @@ $forbidden = @(
     "IInteractionAnimationBackend",
     "InteractionAnimationApiDebugProbe",
     "TryStopPlayerInteractions",
-    "IsPlayerInteractionActive"
+    "IsPlayerInteractionActive",
+    "StanceViewpointMismatchTicksRequired"
 )
 foreach ($term in $forbidden) {
     if ($source.Contains($term)) {
@@ -39,7 +40,13 @@ $required = @(
     "TrySetInteractionFloat",
     "TryGetActiveInteraction",
     "InteractionAnimationValidationReport",
-    "manifest_schema_1_migrated"
+    "manifest_schema_1_migrated",
+    "stopOnGameplayCameraDisplacement",
+    "stabilizeLocalCameraPosition",
+    "localCameraOwnedExternally",
+    "live_body.playback_rate_sample",
+    "StanceViewpointMismatchSecondsRequired",
+    "TryReapplyLayerState"
 )
 foreach ($term in $required) {
     if (-not $source.Contains($term)) {
