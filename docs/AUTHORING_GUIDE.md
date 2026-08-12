@@ -1,6 +1,6 @@
 # Authoring Guide
 
-Last updated: 2026-08-08
+Last updated: 2026-08-11
 
 This guide builds both repository examples and then replaces one sample clip. The public tools validate the resulting API contract; they do not prescribe a retargeting method.
 
@@ -29,10 +29,28 @@ The source command creates only original primitives and animation data:
 
 The build command runs the contract validator, writes schema-2 JSON, and exports bundles into examples/GeneratedBundles.
 
+## Retargeting walkthrough: from an external clip to the player rig
+
+This is the path most animators arrive with: a clip made in Blender, bought from a store, or captured from mocap, that must end up moving the Lethal Company player body. The API does not retarget at runtime, so the retarget happens in your authoring tools, once, before export. Any route works if the final Unity AnimationClip binds the exact paths listed in the [Lethal Company Rig Reference](LETHAL_COMPANY_RIG_REFERENCE.md).
+
+**Route A - animate directly on the target names (simplest).** Build or rename an armature so every bone matches the rig reference exactly (`spine`, `spine.001` ... `spine.003`, `shoulder.L`, `arm.L_upper`, `arm.L_lower`, `hand.L`, `finger1.L` ... and the mirrored `.R` chain; legs `thigh.L`/`shin.L`). Animate on it, export FBX with the armature as the root, and import into Unity with Animation Type set to **Generic** (not Humanoid - Humanoid import discards the transform paths the API needs). The imported clip's curves then already carry the correct relative paths.
+
+**Route B - retarget an existing animation in your DCC.** Keep your source animation on its own rig, then transfer it to a target armature named per Route A using your retargeting tool of choice (Blender constraint-based retargeters, Auto-Rig Pro's remap, Rokoko Retargeting, etc.). Bake the result to keyframes on the target armature, delete the source rig, and export/import as Generic exactly as in Route A. The tool does not matter; the baked bone names and parenting do.
+
+**Route C - remap paths inside Unity.** If you already have a Generic clip whose curve paths almost match (wrong prefix, wrong segment names), edit the bindings in the editor: `AnimationUtility.GetCurveBindings` / `SetEditorCurve` lets a small editor script rewrite each binding's `path`. This is also the repair route when validation or in-game testing shows a near-miss binding.
+
+Whichever route you take, finish the same way:
+
+1. Check every curve path against the rig reference (the example project's clip-binding validator automates this).
+2. Put the clip in your controller (or clip pack), export the bundle, and validate.
+3. Verify in game. A clip with wrong paths plays silently with no motion and no error - Unity only logs a `Could not resolve '<path>'` warning. Motionless bones mean wrong paths, not a broken API session.
+
+Humanoid retargeting *inside* Unity is still useful as a production step (for example, retarget mocap onto a Humanoid avatar, then bake the result onto a Generic rig with the target names), but a Humanoid clip cannot be shipped directly: BodyWorld needs Generic path-bound curves.
+
 ## BodyWorld workflow
 
-1. Duplicate the BodyWorld proxy and preserve the required transform names.
-2. Author or retarget the clip.
+1. Duplicate the BodyWorld proxy to learn the toolchain, but author final clips against the live-rig paths in the [Lethal Company Rig Reference](LETHAL_COMPANY_RIG_REFERENCE.md) - the proxy's simplified names do not all match the live player rig.
+2. Author or retarget the clip (see the walkthrough above).
 3. Ensure every transform binding resolves against the supported player hierarchy.
 4. Put the clip into a controller state or map it through a clip pack.
 5. Inspect controller layers and parameters with the supplied menu command.
