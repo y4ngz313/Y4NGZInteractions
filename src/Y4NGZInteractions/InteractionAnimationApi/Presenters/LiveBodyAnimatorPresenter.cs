@@ -33,6 +33,19 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         // past that glide before it is treated as a desynced viewpoint. A tick count made the
         // guard fire after only ~0.2 seconds on high-refresh-rate clients.
         private const float StanceViewpointMismatchSecondsRequired = 0.5f;
+        // Remote-player locomotion thresholds. Vanilla never replicates isWalking/isSprinting
+        // (both are written only inside the owner-gated block of PlayerControllerB.Update), and
+        // a remote body is moved by assigning transform.localPosition — CharacterController
+        // .velocity therefore stays zero on observers. Speed is measured from the replicated
+        // localPosition delta instead. Vanilla walk lands near 3.6-4 m/s, crouch-walk near
+        // 2.4 m/s (movementSpeed / 1.5), and sprint approaches 8 m/s (sprintMultiplier lerps
+        // to 2.25), so the sprint gate sits clear of a loaded walk on either side. Enter/exit
+        // pairs give hysteresis: a single noisy sample must not chatter an animator Bool.
+        private const float RemoteWalkEnterSpeed = 0.35f;
+        private const float RemoteWalkExitSpeed = 0.15f;
+        private const float RemoteSprintEnterSpeed = 5.5f;
+        private const float RemoteSprintExitSpeed = 4.5f;
+        private const float RemoteSpeedSmoothingPerSecond = 12f;
         private const string VanillaStartCrouchingTrigger = "startCrouching";
         private const string VanillaCrouchingBool = "crouching";
         private const string CameraDisplacementGuardBaselineSource =
@@ -126,6 +139,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private bool hasLastSyncedCrouchState;
         private bool lastSyncedCrouchState;
         private int lastLocomotionSyncSignature = -1;
+        private int locomotionStateFrame = -1;
+        private LocomotionState locomotionStateCache;
+        private Vector3 remoteLocomotionLastLocalPosition;
+        private float remoteLocomotionLastSampleTime;
+        private bool hasRemoteLocomotionSample;
+        private float remoteLocomotionSmoothedSpeed;
+        private bool remoteLocomotionWalking;
+        private bool remoteLocomotionSprinting;
         private LocalCameraPositionStabilizer cameraPositionStabilizer;
         private LocalCameraRotationStabilizer cameraRotationStabilizer;
         private bool specialAnimationAutoStopExemptLogged;
@@ -392,6 +413,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             nextDiagnosticsAtSeconds = 0f;
             exitRequested = false;
             lastMovementValue = -1;
+            ResetLocomotionStateResolution();
             ResetPlaybackRateProbe();
             requestedStopReason = null;
             active = true;
@@ -457,8 +479,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             // never captures. Re-assert them every tick from live player state so a crouch or
             // stand during the session cannot leave the session animator (and the viewpoint it
             // drives) in the stale stance.
-            if (IsLocalPlayer(context?.Request?.Player))
-                SyncVanillaLocomotionParameters("tick");
+            //
+            // This runs for remote players' sessions too. Vanilla drives a remote body by
+            // CrossFading replicated animator STATE HASHES (UpdatePlayerAnimationClientRpc),
+            // never by parameters — and those hashes belong to the owner's controller, so
+            // Animator.HasState fails against a swapped session controller and nothing moves.
+            // Parameters are the only path left, so a third-person session must drive them
+            // itself or the swapped controller's locomotion never leaves idle.
+            SyncVanillaLocomotionParameters("tick");
             DriveMovementParameter();
             SamplePlaybackRateProgression();
             DetectAutoStopConditions();
@@ -2634,11 +2662,217 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 System.Reflection.BindingFlags.Public);
 
         /// <summary>
+        /// Locomotion inputs resolved for one session's own player, from whichever source is
+        /// actually populated on that player instance. Never mixes in local input.
+        /// </summary>
+        private readonly struct LocomotionState
+        {
+            internal LocomotionState(
+                bool walking,
+                bool sprinting,
+                bool crouching,
+                bool jumping,
+                bool jumpingKnown,
+                float horizontalSpeed,
+                string source)
+            {
+                Walking = walking;
+                Sprinting = sprinting;
+                Crouching = crouching;
+                Jumping = jumping;
+                JumpingKnown = jumpingKnown;
+                HorizontalSpeed = horizontalSpeed;
+                Source = source;
+            }
+
+            internal bool Walking { get; }
+            internal bool Sprinting { get; }
+            internal bool Crouching { get; }
+            internal bool Jumping { get; }
+            internal bool JumpingKnown { get; }
+            internal float HorizontalSpeed { get; }
+            internal string Source { get; }
+        }
+
+        /// <summary>
+        /// Resolves this session's locomotion inputs from the session's OWN player instance —
+        /// never from local input — and caches the result for the frame so the remote speed
+        /// sampler advances exactly once per frame.
+        /// </summary>
+        private LocomotionState ResolveLocomotionState()
+        {
+            if (locomotionStateFrame == Time.frameCount)
+                return locomotionStateCache;
+
+            GameNetcodeStuff.PlayerControllerB player = context?.Request?.Player;
+            LocomotionState state = IsLocalPlayer(player)
+                ? ResolveLocalLocomotionState(player)
+                : ResolveRemoteLocomotionState(player);
+            locomotionStateFrame = Time.frameCount;
+            locomotionStateCache = state;
+            return state;
+        }
+
+        private static LocomotionState ResolveLocalLocomotionState(
+            GameNetcodeStuff.PlayerControllerB player)
+        {
+            bool sprinting = false;
+            bool crouching = false;
+            try { sprinting = player.isSprinting; } catch { }
+            try { crouching = player.isCrouching; } catch { }
+
+            float horizontalSpeed = 0f;
+            try
+            {
+                if (player.thisController != null)
+                {
+                    Vector3 velocity = player.thisController.velocity;
+                    velocity.y = 0f;
+                    horizontalSpeed = velocity.magnitude;
+                }
+            }
+            catch { }
+
+            bool walking;
+            string source;
+            object walkingValue = null;
+            try { walkingValue = VanillaIsWalkingField?.GetValue(player); } catch { }
+            if (walkingValue is bool vanillaWalking)
+            {
+                walking = vanillaWalking;
+                source = "vanilla_isWalking_field";
+            }
+            else
+            {
+                walking = horizontalSpeed > 0.2f;
+                source = "horizontal_velocity_fallback";
+            }
+
+            bool jumping = false;
+            bool jumpingKnown = false;
+            try
+            {
+                object jumpingValue = VanillaIsJumpingField?.GetValue(player);
+                if (jumpingValue is bool vanillaJumping)
+                {
+                    jumping = vanillaJumping;
+                    jumpingKnown = true;
+                }
+            }
+            catch { }
+
+            return new LocomotionState(
+                walking,
+                sprinting,
+                crouching,
+                jumping,
+                jumpingKnown,
+                horizontalSpeed,
+                source);
+        }
+
+        /// <summary>
+        /// Remote players expose almost none of the owner-side locomotion state: isWalking,
+        /// isSprinting, and isJumping are written only inside the owner-gated block of
+        /// PlayerControllerB.Update, and the body is moved by assigning transform.localPosition
+        /// toward serverPlayerPosition rather than through CharacterController.Move — so
+        /// thisController.velocity stays zero on observers. Only isCrouching genuinely
+        /// replicates (SyncCrouchingClientRpc). Walking/Sprinting are therefore measured from
+        /// the replicated localPosition delta; vanilla itself falls back to a derived signal for
+        /// non-owners (it reads the layer-0 "Sprinting" state tag for footstep audio), which is
+        /// unavailable here because the session controller replaced that state machine.
+        /// Jumping is reported as unknown rather than written as a guessed false.
+        /// </summary>
+        private LocomotionState ResolveRemoteLocomotionState(
+            GameNetcodeStuff.PlayerControllerB player)
+        {
+            if (player == null)
+            {
+                hasRemoteLocomotionSample = false;
+                return new LocomotionState(
+                    false, false, false, false, false, 0f, "remote_player_unavailable");
+            }
+
+            bool crouching = false;
+            try { crouching = player.isCrouching; } catch { }
+
+            float horizontalSpeed = remoteLocomotionSmoothedSpeed;
+            string source = "remote_position_delta";
+            try
+            {
+                Transform playerTransform = player.transform;
+                if (playerTransform == null)
+                {
+                    hasRemoteLocomotionSample = false;
+                    source = "remote_transform_unavailable";
+                }
+                else
+                {
+                    // Ship-relative local space, matching the space vanilla replicates and
+                    // interpolates remote bodies in. World space would read the ship's own
+                    // motion as player movement while in flight.
+                    Vector3 localPosition = playerTransform.localPosition;
+                    float now = Time.time;
+                    if (!hasRemoteLocomotionSample)
+                    {
+                        hasRemoteLocomotionSample = true;
+                        remoteLocomotionSmoothedSpeed = 0f;
+                        horizontalSpeed = 0f;
+                        source = "remote_position_delta_priming";
+                    }
+                    else
+                    {
+                        float sampleSeconds = now - remoteLocomotionLastSampleTime;
+                        if (sampleSeconds > 1e-4f)
+                        {
+                            Vector3 delta = localPosition - remoteLocomotionLastLocalPosition;
+                            delta.y = 0f;
+                            float rawSpeed = delta.magnitude / sampleSeconds;
+                            remoteLocomotionSmoothedSpeed = Mathf.Lerp(
+                                remoteLocomotionSmoothedSpeed,
+                                rawSpeed,
+                                Mathf.Clamp01(sampleSeconds * RemoteSpeedSmoothingPerSecond));
+                            horizontalSpeed = remoteLocomotionSmoothedSpeed;
+                        }
+                    }
+
+                    remoteLocomotionLastLocalPosition = localPosition;
+                    remoteLocomotionLastSampleTime = now;
+                }
+            }
+            catch
+            {
+                hasRemoteLocomotionSample = false;
+                source = "remote_position_delta_failed";
+            }
+
+            // Hysteresis: the sampled speed is a lerped interpolation of a ~0.1-0.24s position
+            // stream, so a single threshold would chatter Walking on and off at a walk.
+            remoteLocomotionWalking = remoteLocomotionWalking
+                ? horizontalSpeed > RemoteWalkExitSpeed
+                : horizontalSpeed > RemoteWalkEnterSpeed;
+            remoteLocomotionSprinting = remoteLocomotionSprinting
+                ? horizontalSpeed > RemoteSprintExitSpeed
+                : horizontalSpeed > RemoteSprintEnterSpeed;
+
+            return new LocomotionState(
+                remoteLocomotionWalking,
+                remoteLocomotionWalking && remoteLocomotionSprinting,
+                crouching,
+                false,
+                false,
+                horizontalSpeed,
+                source);
+        }
+
+        /// <summary>
         /// Rewrites the transition-gated vanilla locomotion parameters from the player's CURRENT
         /// state. Vanilla re-asserts "Sprinting"/"Sideways"/"animationSpeed" every frame while
         /// its cached isWalking field is true, but writes "Walking", "crouching", and "Jumping"
         /// only on state transitions (decompiled PlayerControllerB.Update) — so a stale animator
-        /// value survives indefinitely while the player keeps moving.
+        /// value survives indefinitely while the player keeps moving. For a remote player's
+        /// session none of that runs at all, so this is the only thing driving the swapped
+        /// controller's locomotion states.
         /// </summary>
         private void SyncVanillaLocomotionParameters(string phase)
         {
@@ -2648,50 +2882,20 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             try
             {
-                bool sprinting = false;
-                bool crouching = false;
-                try { sprinting = player.isSprinting; } catch { }
-                try { crouching = player.isCrouching; } catch { }
-
-                bool walking;
-                string walkingSource;
-                object walkingValue = null;
-                try { walkingValue = VanillaIsWalkingField?.GetValue(player); } catch { }
-                if (walkingValue is bool vanillaWalking)
-                {
-                    walking = vanillaWalking;
-                    walkingSource = "vanilla_isWalking_field";
-                }
-                else
-                {
-                    float horizontalSpeed = 0f;
-                    try
-                    {
-                        if (player.thisController != null)
-                        {
-                            Vector3 velocity = player.thisController.velocity;
-                            velocity.y = 0f;
-                            horizontalSpeed = velocity.magnitude;
-                        }
-                    }
-                    catch { }
-                    walking = horizontalSpeed > 0.2f;
-                    walkingSource = "horizontal_velocity_fallback";
-                }
-
-                bool jumping = false;
-                try
-                {
-                    object jumpingValue = VanillaIsJumpingField?.GetValue(player);
-                    if (jumpingValue is bool vanillaJumping)
-                        jumping = vanillaJumping;
-                }
-                catch { }
+                LocomotionState locomotion = ResolveLocomotionState();
+                bool walking = locomotion.Walking;
+                bool sprinting = locomotion.Sprinting;
+                bool crouching = locomotion.Crouching;
+                bool jumping = locomotion.Jumping;
+                string walkingSource = locomotion.Source;
 
                 SetBoolIfExists("Walking", walking);
                 SetBoolIfExists("Sprinting", walking && sprinting);
                 SetBoolIfExists(VanillaCrouchingBool, crouching);
-                SetBoolIfExists("Jumping", jumping);
+                // Never write a guessed value: isJumping is owner-only, so a remote session
+                // leaves "Jumping" at whatever the controller swap defaulted it to.
+                if (locomotion.JumpingKnown)
+                    SetBoolIfExists("Jumping", jumping);
                 if (!walking)
                     SetBoolIfExists("Sideways", false);
 
@@ -2720,11 +2924,17 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 bool perFramePhase = string.Equals(phase, "tick", StringComparison.Ordinal);
                 if (!perFramePhase || syncSignature != lastLocomotionSyncSignature)
                 {
+                    bool localPlayer = IsLocalPlayer(player);
+                    string playerId = "<unknown>";
+                    try { playerId = player.playerClientId.ToString(); } catch { }
                     context?.Logger?.LogInfo(
                         "[RestoreSeam.locomotion] parameters_synced: " +
                         $"frame={Time.frameCount} handle={context.Handle} phase='{phase}' " +
+                        $"playerId={playerId} localPlayer={localPlayer} " +
                         $"walking={walking} walkingSource='{walkingSource}' " +
-                        $"sprinting={sprinting} crouching={crouching} jumping={jumping}.");
+                        $"horizontalSpeed={locomotion.HorizontalSpeed:0.###} " +
+                        $"sprinting={sprinting} crouching={crouching} " +
+                        $"jumping={jumping} jumpingKnown={locomotion.JumpingKnown}.");
                 }
                 lastLocomotionSyncSignature = syncSignature;
             }
@@ -2748,22 +2958,16 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             if (player == null)
                 return;
 
+            // Same resolved state the locomotion parameter sync uses, so a remote session drives
+            // the movement Int from its own replicated motion instead of a CharacterController
+            // velocity that observers never populate. For the local player this reproduces the
+            // previous isSprinting + thisController.velocity reads exactly.
             int movement = 0;
             try
             {
-                bool sprinting = player.isSprinting;
-                float horizontalSpeed = 0f;
-                if (player.thisController != null)
-                {
-                    UnityEngine.Vector3 velocity = player.thisController.velocity;
-                    velocity.y = 0f;
-                    horizontalSpeed = velocity.magnitude;
-                }
-
-                if (sprinting && horizontalSpeed > 0.2f)
-                    movement = 2;
-                else if (horizontalSpeed > 0.2f)
-                    movement = 1;
+                LocomotionState locomotion = ResolveLocomotionState();
+                if (locomotion.HorizontalSpeed > 0.2f)
+                    movement = locomotion.Sprinting ? 2 : 1;
             }
             catch
             {
@@ -2781,6 +2985,18 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             try { bodyAnimator.SetInteger(body.movementParameter, movement); } catch { }
             if (movement == 2 && previousMovement != 2)
                 ResetPlaybackRateProbe();
+        }
+
+        private void ResetLocomotionStateResolution()
+        {
+            locomotionStateFrame = -1;
+            locomotionStateCache = default;
+            hasRemoteLocomotionSample = false;
+            remoteLocomotionLastLocalPosition = Vector3.zero;
+            remoteLocomotionLastSampleTime = 0f;
+            remoteLocomotionSmoothedSpeed = 0f;
+            remoteLocomotionWalking = false;
+            remoteLocomotionSprinting = false;
         }
 
         private void ResetPlaybackRateProbe()
