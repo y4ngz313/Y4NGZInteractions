@@ -3133,7 +3133,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     (crouching ? 4 : 0) |
                     (jumping ? 8 : 0);
                 bool perFramePhase = string.Equals(phase, "tick", StringComparison.Ordinal);
-                if (!perFramePhase || syncSignature != lastLocomotionSyncSignature)
+                if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled &&
+                    (!perFramePhase || syncSignature != lastLocomotionSyncSignature))
                 {
                     bool localPlayer = IsLocalPlayer(player);
                     string playerId = "<unknown>";
@@ -3732,16 +3733,20 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             // equipping mid-walk kills locomotion (sprint animation and camera bob) until the
             // player happens to stop and start moving again.
             int reappliedParameters = snapshot.ReapplyParameters(bodyAnimator);
-            context.Logger?.LogInfo(
-                "[RestoreSeam.locomotion] parameters_reapplied: " +
-                $"frame={Time.frameCount} handle={context.Handle} phase='start' " +
-                $"count={reappliedParameters}.");
+            if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+            {
+                context.Logger?.LogInfo(
+                    "[RestoreSeam.locomotion] parameters_reapplied: " +
+                    $"frame={Time.frameCount} handle={context.Handle} phase='start' " +
+                    $"count={reappliedParameters}.");
+            }
 
             // The shell carries vanilla's base layer, so replay the exact pre-swap state before
             // the first evaluation. This prevents a crouched equip (or a swap during a stance
             // transition) from rendering the shell controller's default standing state once.
             bool baseLayerStateReplayed = snapshot.TryReapplyLayerState(bodyAnimator, 0);
-            if (baseLayerStateReplayed)
+            if (baseLayerStateReplayed &&
+                InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
             {
                 context.Logger?.LogInfo(
                     "[RestoreSeam.locomotion] base_layer_state_replayed: " +
@@ -3756,11 +3761,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             if (captureCrouching && !baseLayerStateReplayed)
             {
                 FireTriggerIfExists(VanillaStartCrouchingTrigger);
-                context.Logger?.LogInfo(
-                    "[RestoreSeam.locomotion] crouch_entry_asserted: " +
-                    $"frame={Time.frameCount} handle={context.Handle} phase='start' " +
-                    "reason='session_started_while_crouched_base_state_unavailable' " +
-                    "action='fire_startCrouching_on_fresh_base_layer'.");
+                if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+                {
+                    context.Logger?.LogInfo(
+                        "[RestoreSeam.locomotion] crouch_entry_asserted: " +
+                        $"frame={Time.frameCount} handle={context.Handle} phase='start' " +
+                        "reason='session_started_while_crouched_base_state_unavailable' " +
+                        "action='fire_startCrouching_on_fresh_base_layer'.");
+                }
             }
 
             SetBoolIfExists(body.activeBool, true);
@@ -3970,7 +3978,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     currentCrouching != snapshot.CapturedCrouching.Value;
                 AnimatorStateSnapshot outgoingSessionState =
                     AnimatorStateSnapshot.Capture(bodyAnimator);
-                if (stanceMismatch)
+                if (stanceMismatch &&
+                    InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
                 {
                     context?.Logger?.LogInfo(
                         "[RestoreSeam.locomotion] stance_changed_during_session: " +
@@ -3996,12 +4005,15 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 if (liveBaseLayerStateReplayed)
                 {
                     try { bodyAnimator.Update(0f); } catch { }
-                    context?.Logger?.LogInfo(
-                        "[RestoreSeam.locomotion] base_layer_state_replayed: " +
-                        $"frame={Time.frameCount} handle={context.Handle} phase='stop' " +
-                        $"stanceMismatch={stanceMismatch} " +
-                        $"restoreStateMode='{FormatRestoreStateMode(restoreStateMode)}' " +
-                        "action='replay_live_state_on_restored_controller'.");
+                    if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+                    {
+                        context?.Logger?.LogInfo(
+                            "[RestoreSeam.locomotion] base_layer_state_replayed: " +
+                            $"frame={Time.frameCount} handle={context.Handle} phase='stop' " +
+                            $"stanceMismatch={stanceMismatch} " +
+                            $"restoreStateMode='{FormatRestoreStateMode(restoreStateMode)}' " +
+                            "action='replay_live_state_on_restored_controller'.");
+                    }
                 }
 
                 // When the captured base-layer state was not replayed (Fresh restore mode, or
@@ -4016,12 +4028,15 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 {
                     FireTriggerIfExists(VanillaStartCrouchingTrigger);
                     try { bodyAnimator.Update(0f); } catch { }
-                    context?.Logger?.LogInfo(
-                        "[RestoreSeam.locomotion] crouch_entry_asserted: " +
-                        $"frame={Time.frameCount} handle={context.Handle} phase='stop' " +
-                        $"stanceMismatch={stanceMismatch} " +
-                        $"restoreStateMode='{FormatRestoreStateMode(restoreStateMode)}' " +
-                        "action='fire_startCrouching_on_restored_base_layer'.");
+                    if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+                    {
+                        context?.Logger?.LogInfo(
+                            "[RestoreSeam.locomotion] crouch_entry_asserted: " +
+                            $"frame={Time.frameCount} handle={context.Handle} phase='stop' " +
+                            $"stanceMismatch={stanceMismatch} " +
+                            $"restoreStateMode='{FormatRestoreStateMode(restoreStateMode)}' " +
+                            "action='fire_startCrouching_on_restored_base_layer'.");
+                    }
                 }
 
                 return restored ? "restored" : "controller_changed_externally";
