@@ -66,7 +66,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             }
 
             packs.Add(snapshot.PackId, snapshot);
-            logger?.LogInfo(
+            logger?.LogDebug(
                 "[LCInteractionAnimationAPI] pack.registered: " +
                 $"pack='{snapshot.PackId}' version='{snapshot.Version}' " +
                 $"interactions={snapshot.InteractionCount}.");
@@ -149,7 +149,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
             FinalizeConflicts(suspended);
             activeSessions.Add(handle, session);
-            logger?.LogInfo(
+            logger?.LogDebug(
                 "[LCInteractionAnimationAPI] interaction.started: " +
                 $"handle={handle} pack='{pack.PackId}' interaction='{definition.InteractionId}' " +
                 $"presentation='{definition.PresentationKind}'.");
@@ -197,7 +197,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             leases.Release(handle);
             activeSessions.Remove(handle);
             NotifyEnded(session, reason);
-            logger?.LogInfo(
+            logger?.LogDebug(
                 "[LCInteractionAnimationAPI] interaction.stopped: " +
                 $"handle={handle} reason='{reason}'.");
             return true;
@@ -252,7 +252,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 return false;
             }
             float seconds = session.BeginExit();
-            logger?.LogInfo(
+            logger?.LogDebug(
                 "[LCInteractionAnimationAPI] interaction.exit_begun: " +
                 $"handle={handle} exitSeconds={seconds:0.###}.");
             return true;

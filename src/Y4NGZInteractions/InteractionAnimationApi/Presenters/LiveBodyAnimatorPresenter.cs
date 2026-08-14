@@ -33,6 +33,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         // past that glide before it is treated as a desynced viewpoint. A tick count made the
         // guard fire after only ~0.2 seconds on high-refresh-rate clients.
         private const float StanceViewpointMismatchSecondsRequired = 0.5f;
+        // Frames the baseline capture may wait for an in-flight crouch glide to land. Vanilla's
+        // glide runs roughly a quarter second, and the guard simply stays disabled meanwhile.
+        private const int CameraBaselineDeferralFrames = 4;
         // Remote-player locomotion thresholds. Vanilla never replicates isWalking/isSprinting
         // (both are written only inside the owner-gated block of PlayerControllerB.Update), and
         // a remote body is moved by assigning transform.localPosition — CharacterController
@@ -136,6 +139,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private bool stanceViewpointLastCrouchState;
         private bool hasStanceViewpointLastCrouchState;
         private bool stanceViewpointGuardExemptLogged;
+        // Set when the displacement guard (magnitude or stance-mismatch half) is what ended the
+        // session. The restore seam reads it: a guard stop means the camera is already at a
+        // wrong height, so the "legitimately displaced" skip must not preserve that height.
+        private bool cameraGuardRequestedStop;
+        // Baseline capture deferral: a capture taken mid crouch-glide memorizes an intermediate
+        // height that then becomes the next session's starting point.
+        private int cameraBaselineDeferredFramesRemaining;
+        private bool cameraBaselineDeferralLogged;
         private bool hasLastSyncedCrouchState;
         private bool lastSyncedCrouchState;
         private int lastLocomotionSyncSignature = -1;
@@ -465,6 +476,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 return;
             }
 
+            RetryDeferredCameraBaselineCapture();
             DetectUnsafeCameraDisplacement(deltaTime);
             if (requestedStopReason.HasValue)
                 return;
@@ -555,7 +567,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
         private void CaptureLocalCameraBaseline()
         {
-            ResetCameraDisplacementGuardState();
+            CaptureLocalCameraBaseline(deferredRetry: false);
+        }
+
+        private void CaptureLocalCameraBaseline(bool deferredRetry)
+        {
+            if (!deferredRetry)
+                ResetCameraDisplacementGuardState();
             if (LocalCameraOwnedExternally)
             {
                 context?.Logger?.LogInfo(
@@ -581,12 +599,42 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 return;
             }
 
-            if (PreserveGameplayCamera)
+            // Session-entry heal runs once per session, not on each deferred retry.
+            if (PreserveGameplayCamera && !deferredRetry)
                 TryHealCameraDriftAtSessionEntry(player);
 
             Transform gameplayCameraTransform = player.gameplayCamera.transform;
-            cameraPlayerLocalPositionAtStart =
+            Vector3 candidateBaseline =
                 player.transform.InverseTransformPoint(gameplayCameraTransform.position);
+
+            // A capture taken while vanilla is gliding the camera between the crouch and stand
+            // heights memorizes an intermediate height that belongs to no stance. Wait a few
+            // frames for the glide to land; if it has not landed by then, capture anyway but
+            // flag the baseline so the stabilizer refuses to pin it.
+            bool stanceTransitionInProgress =
+                IsStanceTransitionInProgress(player, candidateBaseline);
+            if (stanceTransitionInProgress)
+            {
+                if (!deferredRetry)
+                    cameraBaselineDeferredFramesRemaining = CameraBaselineDeferralFrames;
+                if (cameraBaselineDeferredFramesRemaining > 0)
+                {
+                    if (!cameraBaselineDeferralLogged)
+                    {
+                        cameraBaselineDeferralLogged = true;
+                        context?.Logger?.LogInfo(
+                            "[LCInteractionAnimationAPI] live_body.camera_displacement_guard.baseline_deferred: " +
+                            $"handle={context.Handle} interaction='{context.Manifest?.interactionId ?? "<none>"}' " +
+                            $"candidate_baseline={DescribeVector(candidateBaseline)} " +
+                            $"frames={cameraBaselineDeferredFramesRemaining} " +
+                            "reason='stance_transition_in_progress' " +
+                            "action='defer_baseline_capture'.");
+                    }
+                    return;
+                }
+            }
+
+            cameraPlayerLocalPositionAtStart = candidateBaseline;
             hasCameraPlayerLocalBaseline = true;
             Vector3 gameplayCameraLocalEuler = gameplayCameraTransform.localEulerAngles;
             gameplayCameraLocalYawAtStart =
@@ -621,7 +669,10 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 VanillaCameraPlayerLocalRestExpectation);
             cameraGuardPreExistingDisplacementDetected =
                 cameraBaselineDisplacementFromVanillaRest > CameraDisplacementGuardThreshold;
-            cameraGuardBaselineContaminated = cameraGuardPreExistingDisplacementDetected;
+            // A baseline captured after the deferral budget ran out is still mid-glide: treat it
+            // as contaminated so the stabilizer refuses to pin it.
+            cameraGuardBaselineContaminated =
+                cameraGuardPreExistingDisplacementDetected || stanceTransitionInProgress;
             bool baselineCrouching = false;
             try { baselineCrouching = player.isCrouching; } catch { }
 
@@ -881,6 +932,63 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             stanceViewpointLastCrouchState = false;
             hasStanceViewpointLastCrouchState = false;
             stanceViewpointGuardExemptLogged = false;
+            cameraGuardRequestedStop = false;
+            cameraBaselineDeferredFramesRemaining = 0;
+            cameraBaselineDeferralLogged = false;
+        }
+
+        /// <summary>
+        /// Player-local camera Y that vanilla settles on for the player's current stance.
+        /// </summary>
+        private static float StanceRestHeight(bool crouching)
+        {
+            return crouching
+                ? VanillaCameraCrouchedPlayerLocalRestHeight
+                : VanillaCameraPlayerLocalRestExpectation.y;
+        }
+
+        private static bool TryReadCrouching(
+            GameNetcodeStuff.PlayerControllerB player,
+            out bool crouching)
+        {
+            crouching = false;
+            if (player == null)
+                return false;
+            try
+            {
+                crouching = player.isCrouching;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// True while the camera sits between the two stance rest heights rather than at either
+        /// of them — vanilla's crouch glide is in flight. Capturing a baseline here memorizes an
+        /// intermediate height (the 1.60 seen in the reported cascade) that belongs to no stance.
+        /// </summary>
+        private static bool IsStanceTransitionInProgress(
+            GameNetcodeStuff.PlayerControllerB player,
+            Vector3 cameraPlayerLocal)
+        {
+            if (!TryReadCrouching(player, out bool crouching))
+                return false;
+
+            float deviationFromCurrentStance =
+                Mathf.Abs(cameraPlayerLocal.y - StanceRestHeight(crouching));
+            float deviationFromOtherStance =
+                Mathf.Abs(cameraPlayerLocal.y - StanceRestHeight(!crouching));
+            // Only treat it as an in-flight glide, not as arbitrary displacement: the height has
+            // to be off the current stance yet still no further out than the opposite stance.
+            return deviationFromCurrentStance > StanceViewpointHeightToleranceMeters &&
+                deviationFromCurrentStance < Mathf.Abs(
+                    VanillaCameraPlayerLocalRestExpectation.y -
+                    VanillaCameraCrouchedPlayerLocalRestHeight) &&
+                deviationFromOtherStance <= deviationFromCurrentStance +
+                    StanceViewpointHeightToleranceMeters;
         }
 
         private void StartLocalCameraPositionStabilizer(
@@ -898,18 +1006,50 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             if (player == null || player.transform == null || player.gameplayCamera == null)
                 return;
 
+            // Refuse to pin a baseline that is already known bad. Pinning contaminated residue
+            // holds the wrong height for the whole session, the stance guard then stops the
+            // session, and the stop leaves that height behind for the next capture to adopt.
+            bool crouchingKnown = TryReadCrouching(player, out bool crouchingAtCapture);
+            float stanceRest = StanceRestHeight(crouchingAtCapture);
+            float stanceDeviation =
+                Mathf.Abs(cameraPlayerLocalPositionAtStart.y - stanceRest);
+            bool stanceDeviationExcessive =
+                crouchingKnown && stanceDeviation > StanceViewpointHeightToleranceMeters;
+            if (cameraGuardBaselineContaminated || stanceDeviationExcessive)
+            {
+                context?.Logger?.LogWarning(
+                    "[LCInteractionAnimationAPI] live_body.local_camera_stabilizer_skipped: " +
+                    $"handle={context.Handle} " +
+                    $"baseline={DescribeVector(cameraPlayerLocalPositionAtStart)} " +
+                    $"baselineContaminated={cameraGuardBaselineContaminated} " +
+                    $"crouching={crouchingAtCapture} crouchingKnown={crouchingKnown} " +
+                    $"stanceRestHeight={stanceRest:0.###} " +
+                    $"stanceHeightDeviation={stanceDeviation:0.###} " +
+                    $"tolerance={StanceViewpointHeightToleranceMeters:0.###} " +
+                    "reason='contaminated_baseline' action='run_unpinned'.");
+                return;
+            }
+
             try
             {
                 cameraPositionStabilizer =
                     player.gameplayCamera.gameObject.AddComponent<LocalCameraPositionStabilizer>();
-                cameraPositionStabilizer.Initialize(
+                cameraPositionStabilizer.InitializeStanceRelative(
                     player.transform,
                     player.gameplayCamera.transform,
-                    cameraPlayerLocalPositionAtStart);
+                    cameraPlayerLocalPositionAtStart,
+                    crouchingKnown ? player : null,
+                    crouchingAtCapture,
+                    VanillaCameraCrouchedPlayerLocalRestHeight,
+                    VanillaCameraPlayerLocalRestExpectation.y);
                 context?.Logger?.LogInfo(
                     "[LCInteractionAnimationAPI] live_body.local_camera_stabilizer_started: " +
                     $"handle={context.Handle} playerLocalPosition={cameraPlayerLocalPositionAtStart} " +
-                    "mode='session_position_pin' explicitOptIn=True.");
+                    $"mode='{(crouchingKnown ? "session_stance_relative_pin" : "session_position_pin")}' " +
+                    $"crouchingAtCapture={crouchingAtCapture} " +
+                    $"stanceRestHeight={stanceRest:0.###} " +
+                    $"stanceRelativeHeightOffset={cameraPositionStabilizer.StanceRelativeHeightOffset:0.###} " +
+                    "explicitOptIn=True.");
             }
             catch (Exception exception)
             {
@@ -1888,6 +2028,23 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             return stopwatch != null ? stopwatch.LapMilliseconds() : 0d;
         }
 
+        /// <summary>
+        /// Completes a baseline capture that was deferred at session start because a crouch
+        /// glide was in flight. Runs at most <see cref="CameraBaselineDeferralFrames"/> ticks;
+        /// the last attempt captures unconditionally (flagging the baseline when the glide is
+        /// somehow still running) so the displacement guard never stays disabled for a session.
+        /// </summary>
+        private void RetryDeferredCameraBaselineCapture()
+        {
+            if (hasCameraPlayerLocalBaseline || cameraBaselineDeferredFramesRemaining <= 0)
+                return;
+
+            cameraBaselineDeferredFramesRemaining--;
+            CaptureLocalCameraBaseline(deferredRetry: true);
+            if (hasCameraPlayerLocalBaseline)
+                StartLocalCameraPositionStabilizer(context?.Manifest?.body);
+        }
+
         private void DetectUnsafeCameraDisplacement(float deltaTime)
         {
             if (!StopOnGameplayCameraDisplacement ||
@@ -1989,6 +2146,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             }
 
             requestedStopReason = InteractionAnimationStopReason.PresenterFailure;
+            cameraGuardRequestedStop = true;
             context?.Logger?.LogError(
                 "[LCInteractionAnimationAPI] live_body.camera_displacement_guard.stop: " +
                 BuildMeasurements() + " action='stop_genuinely_new_displacement'.");
@@ -2074,6 +2232,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             }
 
             requestedStopReason = InteractionAnimationStopReason.PresenterFailure;
+            cameraGuardRequestedStop = true;
             context?.Logger?.LogError(
                 "[LCInteractionAnimationAPI] live_body.camera_displacement_guard.stop: " +
                 measurements + " action='stop_stance_mismatched_viewpoint_height'.");
@@ -2352,7 +2511,37 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         /// residue left here at Stop otherwise persists for the rest of the game and stacks
         /// across sessions. Positions only — rotation is owned by ReapplySeamCameraRotation.
         /// </summary>
-        private void ApplyCameraChainPositionSnapToRest()
+        /// <summary>
+        /// Forces the gameplay camera's player-local height onto the rest height of the stance
+        /// the player is actually in. Used only on a displacement-guard stop, where the current
+        /// height is by definition one the guard rejected.
+        /// </summary>
+        private void ApplyStanceRestHeightSnap(
+            GameNetcodeStuff.PlayerControllerB player,
+            bool crouching,
+            InteractionAnimationStopReason stopReason,
+            string phase)
+        {
+            if (player == null || player.gameplayCamera == null || player.transform == null)
+                return;
+
+            Vector3 before = player.transform.InverseTransformPoint(
+                player.gameplayCamera.transform.position);
+            float stanceRestHeight = StanceRestHeight(crouching);
+            player.gameplayCamera.transform.position = player.transform.TransformPoint(
+                new Vector3(before.x, stanceRestHeight, before.z));
+            context?.Logger?.LogInfo(
+                "[RestoreSeam.camerachain] stance_rest_snap_applied: " +
+                $"frame={Time.frameCount} " +
+                $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
+                $"phase='{phase}' stopReason='{stopReason}' crouching={crouching} " +
+                $"beforePlayerLocal={DescribeVector(before)} " +
+                $"stanceRestHeight={stanceRestHeight:0.###} " +
+                "reason='displacement_guard_stop' action='snap_to_stance_rest_height'.");
+        }
+
+        private void ApplyCameraChainPositionSnapToRest(
+            InteractionAnimationStopReason stopReason)
         {
             if (!PreserveGameplayCamera)
                 return;
@@ -2391,7 +2580,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     specialAnimation = player.inSpecialInteractAnimation;
                 }
                 catch { }
-                if (crouching || specialAnimation)
+                // A guard stop means the camera is at a height the guard just rejected. Skipping
+                // the snap there leaves that wrong height in place, and the next session's
+                // baseline capture adopts it — the observed 1.60 -> 0.43 -> 0.38 cascade. The
+                // "legitimately displaced" exemption therefore only applies to ordinary stops.
+                bool guardStop = cameraGuardRequestedStop ||
+                    stopReason == InteractionAnimationStopReason.PresenterFailure;
+                if ((crouching || specialAnimation) && !guardStop)
                 {
                     context?.Logger?.LogInfo(
                         "[RestoreSeam.camerachain] snap_skipped: " +
@@ -2405,6 +2600,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     ? player.transform.InverseTransformPoint(
                         player.gameplayCamera.transform.position)
                     : Vector3.zero;
+
+                // Guard stop: put the viewpoint back on the current stance's rest height before
+                // (and independently of) the pristine chain restore, which only knows the
+                // authored standing defaults. This is what stops the descending cascade.
+                if (guardStop)
+                    ApplyStanceRestHeightSnap(player, crouching, stopReason, "pre_pristine");
+
                 if (!InteractionAnimationApiRestoreDiagnostics
                         .TryRestorePristineCameraChainPositions(
                             player,
@@ -2412,12 +2614,21 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                             out string reason,
                             out string baselineSource))
                 {
+                    // The stance snap above still stands; the stabilizer must adopt it or its
+                    // deferred LateUpdates would restore the rejected height.
+                    if (guardStop)
+                        cameraPositionStabilizer?.RetargetToCurrentPosition();
                     context?.Logger?.LogInfo(
                         "[RestoreSeam.camerachain] snap_skipped: " +
                         $"frame={Time.frameCount} handle={context.Handle} " +
-                        $"reason='{reason}' action='leave_camera_chain'.");
+                        $"reason='{reason}' guardStop={guardStop} action='leave_camera_chain'.");
                     return;
                 }
+
+                // The pristine chain carries the authored STANDING defaults, so re-assert the
+                // crouch rest height after it on a guard stop.
+                if (guardStop && crouching)
+                    ApplyStanceRestHeightSnap(player, true, stopReason, "post_pristine");
 
                 Vector3 afterPlayerLocal = player.gameplayCamera != null
                     ? player.transform.InverseTransformPoint(
@@ -2922,7 +3133,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     (crouching ? 4 : 0) |
                     (jumping ? 8 : 0);
                 bool perFramePhase = string.Equals(phase, "tick", StringComparison.Ordinal);
-                if (!perFramePhase || syncSignature != lastLocomotionSyncSignature)
+                if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled &&
+                    (!perFramePhase || syncSignature != lastLocomotionSyncSignature))
                 {
                     bool localPlayer = IsLocalPlayer(player);
                     string playerId = "<unknown>";
@@ -3223,7 +3435,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 // Position snap must run before the arms glue: the glue derives camera-container
                 // and local-arms positions from the arms metarig, so it has to read the healed
                 // chain, not the last authored-clip pose.
-                ApplyCameraChainPositionSnapToRest();
+                ApplyCameraChainPositionSnapToRest(stopReason);
                 ApplyVanillaLocalArmsGlueBeforeRigEvaluation();
             }
             double seamGlueMs = LapMilliseconds(seamTiming);
@@ -3521,16 +3733,20 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             // equipping mid-walk kills locomotion (sprint animation and camera bob) until the
             // player happens to stop and start moving again.
             int reappliedParameters = snapshot.ReapplyParameters(bodyAnimator);
-            context.Logger?.LogInfo(
-                "[RestoreSeam.locomotion] parameters_reapplied: " +
-                $"frame={Time.frameCount} handle={context.Handle} phase='start' " +
-                $"count={reappliedParameters}.");
+            if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+            {
+                context.Logger?.LogInfo(
+                    "[RestoreSeam.locomotion] parameters_reapplied: " +
+                    $"frame={Time.frameCount} handle={context.Handle} phase='start' " +
+                    $"count={reappliedParameters}.");
+            }
 
             // The shell carries vanilla's base layer, so replay the exact pre-swap state before
             // the first evaluation. This prevents a crouched equip (or a swap during a stance
             // transition) from rendering the shell controller's default standing state once.
             bool baseLayerStateReplayed = snapshot.TryReapplyLayerState(bodyAnimator, 0);
-            if (baseLayerStateReplayed)
+            if (baseLayerStateReplayed &&
+                InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
             {
                 context.Logger?.LogInfo(
                     "[RestoreSeam.locomotion] base_layer_state_replayed: " +
@@ -3545,11 +3761,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             if (captureCrouching && !baseLayerStateReplayed)
             {
                 FireTriggerIfExists(VanillaStartCrouchingTrigger);
-                context.Logger?.LogInfo(
-                    "[RestoreSeam.locomotion] crouch_entry_asserted: " +
-                    $"frame={Time.frameCount} handle={context.Handle} phase='start' " +
-                    "reason='session_started_while_crouched_base_state_unavailable' " +
-                    "action='fire_startCrouching_on_fresh_base_layer'.");
+                if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+                {
+                    context.Logger?.LogInfo(
+                        "[RestoreSeam.locomotion] crouch_entry_asserted: " +
+                        $"frame={Time.frameCount} handle={context.Handle} phase='start' " +
+                        "reason='session_started_while_crouched_base_state_unavailable' " +
+                        "action='fire_startCrouching_on_fresh_base_layer'.");
+                }
             }
 
             SetBoolIfExists(body.activeBool, true);
@@ -3759,7 +3978,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     currentCrouching != snapshot.CapturedCrouching.Value;
                 AnimatorStateSnapshot outgoingSessionState =
                     AnimatorStateSnapshot.Capture(bodyAnimator);
-                if (stanceMismatch)
+                if (stanceMismatch &&
+                    InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
                 {
                     context?.Logger?.LogInfo(
                         "[RestoreSeam.locomotion] stance_changed_during_session: " +
@@ -3785,12 +4005,15 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 if (liveBaseLayerStateReplayed)
                 {
                     try { bodyAnimator.Update(0f); } catch { }
-                    context?.Logger?.LogInfo(
-                        "[RestoreSeam.locomotion] base_layer_state_replayed: " +
-                        $"frame={Time.frameCount} handle={context.Handle} phase='stop' " +
-                        $"stanceMismatch={stanceMismatch} " +
-                        $"restoreStateMode='{FormatRestoreStateMode(restoreStateMode)}' " +
-                        "action='replay_live_state_on_restored_controller'.");
+                    if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+                    {
+                        context?.Logger?.LogInfo(
+                            "[RestoreSeam.locomotion] base_layer_state_replayed: " +
+                            $"frame={Time.frameCount} handle={context.Handle} phase='stop' " +
+                            $"stanceMismatch={stanceMismatch} " +
+                            $"restoreStateMode='{FormatRestoreStateMode(restoreStateMode)}' " +
+                            "action='replay_live_state_on_restored_controller'.");
+                    }
                 }
 
                 // When the captured base-layer state was not replayed (Fresh restore mode, or
@@ -3805,12 +4028,15 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 {
                     FireTriggerIfExists(VanillaStartCrouchingTrigger);
                     try { bodyAnimator.Update(0f); } catch { }
-                    context?.Logger?.LogInfo(
-                        "[RestoreSeam.locomotion] crouch_entry_asserted: " +
-                        $"frame={Time.frameCount} handle={context.Handle} phase='stop' " +
-                        $"stanceMismatch={stanceMismatch} " +
-                        $"restoreStateMode='{FormatRestoreStateMode(restoreStateMode)}' " +
-                        "action='fire_startCrouching_on_restored_base_layer'.");
+                    if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+                    {
+                        context?.Logger?.LogInfo(
+                            "[RestoreSeam.locomotion] crouch_entry_asserted: " +
+                            $"frame={Time.frameCount} handle={context.Handle} phase='stop' " +
+                            $"stanceMismatch={stanceMismatch} " +
+                            $"restoreStateMode='{FormatRestoreStateMode(restoreStateMode)}' " +
+                            "action='fire_startCrouching_on_restored_base_layer'.");
+                    }
                 }
 
                 return restored ? "restored" : "controller_changed_externally";
@@ -5626,6 +5852,16 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private Transform cameraTransform;
         private Vector3 playerLocalPosition;
         private int releaseLateUpdates = -1;
+        // Stance-relative pin. An absolute pin holds the height the baseline happened to carry,
+        // so a crouch or stand during the session leaves the viewpoint at the previous stance's
+        // height until the stance guard stops the session. Storing the baseline as an offset
+        // from the stance rest height in force at capture time preserves whatever displacement
+        // the authored clip wanted while letting the pin follow crouch/stand transitions.
+        private GameNetcodeStuff.PlayerControllerB stancePlayer;
+        private float stanceRelativeHeightOffset;
+        private float crouchRestHeight;
+        private float standRestHeight;
+        private bool stanceRelative;
 
         internal void Initialize(
             Transform playerRoot,
@@ -5635,7 +5871,48 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             this.playerRoot = playerRoot;
             this.cameraTransform = cameraTransform;
             this.playerLocalPosition = playerLocalPosition;
+            stanceRelative = false;
+            stancePlayer = null;
             ApplyNow();
+        }
+
+        internal void InitializeStanceRelative(
+            Transform playerRoot,
+            Transform cameraTransform,
+            Vector3 playerLocalPosition,
+            GameNetcodeStuff.PlayerControllerB player,
+            bool crouchingAtCapture,
+            float crouchRestHeight,
+            float standRestHeight)
+        {
+            this.playerRoot = playerRoot;
+            this.cameraTransform = cameraTransform;
+            this.playerLocalPosition = playerLocalPosition;
+            this.stancePlayer = player;
+            this.crouchRestHeight = crouchRestHeight;
+            this.standRestHeight = standRestHeight;
+            stanceRelativeHeightOffset = playerLocalPosition.y -
+                (crouchingAtCapture ? crouchRestHeight : standRestHeight);
+            stanceRelative = player != null;
+            ApplyNow();
+        }
+
+        internal float StanceRelativeHeightOffset => stanceRelativeHeightOffset;
+
+        private Vector3 ResolveTargetPlayerLocalPosition()
+        {
+            if (!stanceRelative || stancePlayer == null)
+                return playerLocalPosition;
+
+            bool crouching;
+            try { crouching = stancePlayer.isCrouching; }
+            catch { return playerLocalPosition; }
+
+            float restHeight = crouching ? crouchRestHeight : standRestHeight;
+            return new Vector3(
+                playerLocalPosition.x,
+                restHeight + stanceRelativeHeightOffset,
+                playerLocalPosition.z);
         }
 
         internal void ReleaseAfterLateUpdates(int lateUpdates)
@@ -5655,13 +5932,21 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             if (playerRoot == null || cameraTransform == null)
                 return;
             playerLocalPosition = playerRoot.InverseTransformPoint(cameraTransform.position);
+            if (!stanceRelative || stancePlayer == null)
+                return;
+            bool crouching;
+            try { crouching = stancePlayer.isCrouching; }
+            catch { return; }
+            stanceRelativeHeightOffset = playerLocalPosition.y -
+                (crouching ? crouchRestHeight : standRestHeight);
         }
 
         internal void ApplyNow()
         {
             if (playerRoot == null || cameraTransform == null)
                 return;
-            cameraTransform.position = playerRoot.TransformPoint(playerLocalPosition);
+            cameraTransform.position =
+                playerRoot.TransformPoint(ResolveTargetPlayerLocalPosition());
         }
 
         private void LateUpdate()
