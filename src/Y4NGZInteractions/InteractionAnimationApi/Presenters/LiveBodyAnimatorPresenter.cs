@@ -2586,7 +2586,12 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 // "legitimately displaced" exemption therefore only applies to ordinary stops.
                 bool guardStop = cameraGuardRequestedStop ||
                     stopReason == InteractionAnimationStopReason.PresenterFailure;
-                if ((crouching || specialAnimation) && !guardStop)
+                // A crouched stop is legitimately displaced but has a KNOWN rest height, so
+                // heal toward the crouched rest instead of leaving session residue in the
+                // chain. Special interact animations have no such known target — skipping is
+                // still the only safe option there on an ordinary stop.
+                bool crouchRestHeal = crouching && !specialAnimation;
+                if (specialAnimation && !guardStop)
                 {
                     context?.Logger?.LogInfo(
                         "[RestoreSeam.camerachain] snap_skipped: " +
@@ -2626,8 +2631,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 }
 
                 // The pristine chain carries the authored STANDING defaults, so re-assert the
-                // crouch rest height after it on a guard stop.
-                if (guardStop && crouching)
+                // crouch rest height after it whenever the player exits crouched.
+                if ((guardStop || crouchRestHeal) && crouching)
                     ApplyStanceRestHeightSnap(player, true, stopReason, "post_pristine");
 
                 Vector3 afterPlayerLocal = player.gameplayCamera != null
@@ -3121,6 +3126,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                         FireTriggerIfExists(VanillaStartCrouchingTrigger);
                     else
                         ResetTriggerIfExists(VanillaStartCrouchingTrigger);
+                    if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+                    {
+                        context?.Logger?.LogInfo(
+                            "[RestoreSeam.locomotion] crouch_edge_trigger: " +
+                            $"frame={Time.frameCount} handle={context.Handle} phase='{phase}' " +
+                            $"crouching={crouching} " +
+                            $"action='{(crouching ? "fire" : "reset")}_startCrouching'.");
+                    }
                 }
                 hasLastSyncedCrouchState = true;
                 lastSyncedCrouchState = crouching;
@@ -3986,6 +3999,29 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                         $"frame={Time.frameCount} handle={context.Handle} " +
                         $"capturedCrouching={snapshot.CapturedCrouching} " +
                         "action='skip_base_layer_state_replay'.");
+                }
+
+                // The per-tick syncs advanced the crouch-edge tracker to the player's CURRENT
+                // stance, so by stop-phase there is no edge left to fire — but the snapshot
+                // restore below rewrites "crouching" (and the whole controller) back to the
+                // EQUIP-TIME value. Rebase the tracker onto the captured stance so the
+                // pre-state-replay sync sees a genuine edge whenever the player's physical
+                // crouch differs from the restored animator, and fires/resets
+                // "startCrouching" on the freshly restored controller.
+                if (snapshot.CapturedCrouching.HasValue)
+                {
+                    hasLastSyncedCrouchState = true;
+                    lastSyncedCrouchState = snapshot.CapturedCrouching.Value;
+                    if (stanceMismatch &&
+                        InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+                    {
+                        context?.Logger?.LogInfo(
+                            "[RestoreSeam.locomotion] crouch_edge_tracker_rebased: " +
+                            $"frame={Time.frameCount} handle={context.Handle} phase='stop' " +
+                            $"capturedCrouching={snapshot.CapturedCrouching.Value} " +
+                            $"currentCrouching={currentCrouching} " +
+                            "action='rebase_tracker_to_restored_state_for_stance_edge'.");
+                    }
                 }
 
                 bool restored = snapshot.Restore(
