@@ -1,34 +1,42 @@
 # Y4NGZ Interactions
 
-Y4NGZ Interactions is a shared interaction-animation API for Lethal Company. It gives feature mods one owner for first-person and live-body playback so multiple systems can animate a player without fighting over the same animator, rig, or camera.
+**Y4NGZ Interactions** is a shared interaction-animation API for Lethal Company.
+It gives feature mods one owner for first-person and live-body presentation so
+multiple systems do not fight over the same animator, rig, camera, or prop.
 
-This is a library for mod authors. It ships no animation payload of its own and adds no gameplay by itself; install it when another mod declares it as a dependency.
+This is a library for mod authors. It ships no animation payload and adds no
+gameplay by itself; install it when another package declares it as a dependency.
 
-## Installing (players)
+## Installing for players
 
-- Install with a mod manager (r2modman / Thunderstore Mod Manager) like any other mod; BepInExPack is pulled in automatically. For manual installs, place `Y4NGZInteractions.dll` in `BepInEx/plugins/`.
-- Built and verified against Lethal Company v81. A game update that changes the player rig or animator may require an updated release.
+- Install it with r2modman or Thunderstore Mod Manager. BepInExPack is installed
+  automatically.
+- For a manual install, place `Y4NGZInteractions.dll` in `BepInEx/plugins/`.
+- Version 1.0.0 is built against Lethal Company v81. A game update that changes
+  the player rig or animator may require a new release.
 
-## What the API Provides
+## What the API provides
 
-- Registration of named animation packs and interactions from manifest JSON.
-- Live-body playback that is visible locally in first person and remotely in third person.
-- Dedicated local viewmodel playback for interactions that need isolation from the live player rig.
-- Runtime clip-pack substitution using an authored controller shell.
+- Named animation-pack and interaction registration from manifest JSON.
+- **BodyWorld** presentation for a live player body, visible locally in first
+  person and remotely in third person.
+- **DedicatedLocalViewmodel** presentation for local-only camera-space rigs.
+- Consumer-authored controller-shell and clip-pack substitution.
 - Optional hand-attached props with timed release points.
-- Animator-parameter passthrough controlled by the consuming mod.
+- Consumer-controlled animator parameters.
 - Per-player resource leases with reject-or-interrupt conflict policies.
-- External-ownership checks that refuse to overwrite another animation controller.
-- Restore guards for the player animator, rig, camera, and helmet visor.
-- Consumer-selected asset roots, validation, and diagnostic surfaces.
+- External-ownership checks that refuse to overwrite another controller.
+- Deterministic restoration for the player animator, stance, rig, camera, arms,
+  helmet visor, props, and temporary compatibility changes.
+- Strict schema-2 validation with schema-1 migration during the 1.x line.
 
 The public entry point is `LCInteractionAnimationAPI`.
 
-## For Mod Authors
+## For mod authors
 
-Source, documentation, and issues are available at [github.com/y4ngz313/Y4NGZInteractions](https://github.com/y4ngz313/Y4NGZInteractions).
-
-Add `y4ngz313-Y4NGZInteractions-1.0.0` to your Thunderstore manifest's dependencies, reference `Y4NGZInteractions.dll` at compile time (with `Private=false` so it is not copied into your plugin folder), and declare a hard BepInEx dependency so the API initializes before your plugin:
+Add `y4ngz313-Y4NGZInteractions-1.0.0` to your Thunderstore manifest, reference
+`Y4NGZInteractions.dll` at compile time with `Private=false`, and declare a hard
+BepInEx dependency so the API initializes before your plugin:
 
 ```csharp
 using System.IO;
@@ -67,27 +75,36 @@ public sealed class MyModPlugin : BaseUnityPlugin
 }
 ```
 
-The consuming mod owns and ships its bundles, manifests, and finger-pose files. It registers those files from its own plugin directory; Y4NGZ Interactions handles presentation, cancellation, arbitration, and restoration.
+The consuming mod owns and ships its controller, clips, bundles, manifests, and
+finger-pose files. It registers files from its own plugin directory. Y4NGZ
+Interactions owns local presentation, arbitration, cancellation, cleanup, and
+restoration.
 
-Start with the [getting-started guide](https://github.com/y4ngz313/Y4NGZInteractions/blob/main/docs/GETTING_STARTED.md), then see the [API reference](https://github.com/y4ngz313/Y4NGZInteractions/blob/main/docs/API_REFERENCE.md) and [manifest reference](https://github.com/y4ngz313/Y4NGZInteractions/blob/main/docs/MANIFEST_REFERENCE.md).
+## Networking contract
 
-## Networking Contract
+The API is a local presentation layer. It sends no RPCs and replicates no
+gameplay state. A consuming mod must synchronize the triggering event and call
+the API on every client that should present the interaction.
 
-The API is a local presentation layer. It sends no RPCs and replicates no gameplay state. A consuming mod must synchronize the triggering event and call the API on every client for the player being animated.
-
-## Required Dependency
+## Required dependency
 
 - `BepInEx-BepInExPack-5.4.2305`
 
 There are no feature-mod dependencies and no bundled animation assets.
 
-## Compatibility
+## Compatibility and support
 
-- The 1.x public API is treated as a shared compatibility surface.
-- Consumer animation content remains isolated in the consumer's package.
-- Lease and restore guards reduce conflicts, but consumers must still cancel sessions when their gameplay state ends.
-- Licensed under the MIT License.
+- The 1.x C# surface and strict schema-2 contract are treated as shared
+  compatibility surfaces.
+- Schema-1 JSON remains accepted through the documented 1.x migration path.
+- Consumers must cancel sessions when their gameplay state ends and must not
+  assume that this local presentation API synchronizes the start for them.
+- When reporting a problem through the consuming mod's support channel, include
+  `BepInEx/LogOutput.log`, the pack and interaction IDs, the presentation kind,
+  and whether the affected player was local or remote.
 
-## Bugs and Feedback
+Code and original example assets are licensed under the MIT License.
 
-Use the [public issue tracker](https://github.com/y4ngz313/Y4NGZInteractions/issues). Include `BepInEx/LogOutput.log`, the interaction ID, first-person or live-body mode, and whether the affected player was local or remote.
+## Generative AI usage
+
+The code base was developed with generative AI assistance.

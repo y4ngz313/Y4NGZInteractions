@@ -38,7 +38,7 @@ foreach ($relativePath in $tracked) {
 }
 
 if ($violations.Count -gt 0) {
-    throw "Public-tree sanitization failed: $($violations -join '; ')"
+    throw "Release-tree sanitization failed: $($violations -join '; ')"
 }
 
 $projectText = Get-Content -LiteralPath (
@@ -49,4 +49,4 @@ foreach ($name in $forbiddenNames) {
     }
 }
 
-Write-Output "Tracked public tree and dependency declarations are consumer-agnostic."
+Write-Output "Tracked release tree and dependency declarations are consumer-agnostic."
