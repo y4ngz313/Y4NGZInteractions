@@ -14,11 +14,6 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <RestoreAdditionalProjectSources>
-      https://api.nuget.org/v3/index.json;
-      https://nuget.bepinex.dev/v3/index.json;
-      https://nuget.samboy.dev/v3/index.json
-    </RestoreAdditionalProjectSources>
     <!-- Local playtest profile. Derived from the environment so no machine-specific path is
          checked in; override TestProfileRoot (or DeployTarget) to deploy elsewhere. -->
     <TestProfileRoot Condition="'$(TestProfileRoot)' == ''">$(AppData)\com.kesomannen.gale\lethal-company\profiles\Current</TestProfileRoot>

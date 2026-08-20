@@ -37,7 +37,7 @@ jobs:
         shell: pwsh
         run: ./scripts/test-player-animation-api-static-regressions.ps1
 
-      - name: Public tree sanitization
+      - name: Consumer-agnostic release tree
         shell: pwsh
         run: ./scripts/test-public-tree.ps1
 
@@ -53,5 +53,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Y4NGZInteractions-candidate
-          path: release/dist/*-candidate.zip
+          path: release/dist/y4ngz313-Y4NGZInteractions-*.zip
           if-no-files-found: error

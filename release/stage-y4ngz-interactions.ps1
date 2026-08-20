@@ -9,7 +9,7 @@ Set-StrictMode -Version Latest
 $packageName = "Y4NGZInteractions"
 $packageNamespace = "y4ngz313"
 $packageId = "$packageNamespace-$packageName"
-$websiteUrl = "https://github.com/y4ngz313/Y4NGZInteractions"
+$websiteUrl = "https://github.com/y4ngz313"
 $description = "Shared local animation presentation, resource ownership, lifecycle, and restoration API for Lethal Company mods."
 $dependencies = @("BepInEx-BepInExPack-5.4.2305")
 
@@ -106,6 +106,9 @@ if ($readmeText -notmatch '(?m)^#\s+\S' -or $readmeText -match '(?m)^#{1,6}(?!#)
 }
 if ($readmeText -match '(?i)\b[A-Z]:\\|file://') {
     throw "Thunderstore README contains a machine-local path."
+}
+if ($readmeText -match '(?i)github\.com/y4ngz313/Y4NGZInteractions') {
+    throw "Thunderstore README links to the private development repository."
 }
 if (-not $readmeText.Contains($dependencies[0])) {
     throw "Thunderstore README does not document the required package dependency."

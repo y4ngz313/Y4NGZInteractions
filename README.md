@@ -1,8 +1,12 @@
 # Y4NGZInteractions
 
-Last updated: 2026-08-08
+Last updated: 2026-08-19
 
 Y4NGZInteractions is a consumer-agnostic, local animation presentation API for Lethal Company mods. It owns presentation resources for the lifetime of an interaction, plays a consumer-authored controller or viewmodel, and restores the affected player, camera, arms, rig, and prop state when the interaction ends.
+
+This development repository, its living authoring docs, and its issue tracker are
+private. The release package contains only the consumer-facing README, license,
+changelog, manifest, icon, and DLL listed below.
 
 It is not a networking service and it does not retarget animations at runtime. Every client that should see an interaction must receive that fact through networking owned by the consuming mod and invoke the API locally.
 
