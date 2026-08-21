@@ -28,6 +28,16 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         private const float ThirdPersonRigRestRotationThresholdDegrees = 8f;
         private const float ThirdPersonRigRestScaleThreshold = 0.01f;
         private const float RemoteRigDiffPostRestoreSeconds = 5f;
+        // ChainIKConstraintJobBinder/TwoBoneIKConstraintJobBinder bake world-space link lengths,
+        // maxReach, and the maintain*Offset target offsets into persistent native arrays at
+        // RigBuilder.Build() time and never re-derive them. A link measured across a collapsed
+        // bone (scale ~0) bakes a near-zero length that survives the session.
+        private const float IkBakeDegenerateThreshold = 1e-3f;
+        private const int IkBakeChainWalkGuard = 64;
+        internal const string IkBakeProbePhaseAwake = "awake";
+        internal const string IkBakeProbePhasePreStartBuild = "pre-start-build";
+        internal const string IkBakeProbePhasePreRestoreBuild = "pre-restore-build";
+        internal const string IkBakeProbePhasePostRestore = "post-restore";
         private const string TwoBoneIkConstraintTypeName =
             "UnityEngine.Animations.Rigging.TwoBoneIKConstraint";
         private const string ChainIkConstraintTypeName =
@@ -62,6 +72,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         private static ConfigEntry<bool> hardVisorGlueDuringSession;
         private static ConfigEntry<bool> enableExternalCameraPresentationLogger;
         private static ConfigEntry<bool> enableRemoteRigDiffProbe;
+        private static ConfigEntry<bool> enableIkBakeProbe;
         private static ConfigEntry<string> restoreStateMode;
         private static InteractionAnimationRestoreDiagnosticsRunner runner;
         private static PlayerControllerB observedPlayer;
@@ -96,6 +107,10 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             new Dictionary<PlayerControllerB, int>();
         private static readonly List<RemoteRigProbeSchedule> PendingRemoteRigProbes =
             new List<RemoteRigProbeSchedule>();
+        // Keyed per player like the sibling Awake captures: the local player is unknown at Awake,
+        // so every player gets its own reference bake line instead of one global first-Awake line.
+        private static readonly HashSet<PlayerControllerB> IkBakeProbeAwakeLoggedPlayers =
+            new HashSet<PlayerControllerB>();
         private static bool customAnimationHasRun;
         private static bool coordinatorLateUpdateTick;
         private static bool initialized;
@@ -114,6 +129,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         private static bool prepareForLiveBodyStartUninitializedLogged;
         private static bool remoteRigProbeSessionBeginUninitializedLogged;
         private static bool playerAwakeCaptureUninitializedLogged;
+        private static PlayerControllerB ikBakeProbePlayer;
+        private static int pendingIkBakeProbeLateUpdates = -1;
         private static int nextRemoteRigProbeId;
 
         internal static bool RestoreScopedCameraPinEnabled =>
@@ -162,6 +179,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
         internal static bool RecaptureImplausiblePristineRigBaselineEnabled =>
             initialized && ReadEnabled(recaptureImplausiblePristineRigBaseline, true);
+
+        internal static bool IkBakeProbeEnabled =>
+            initialized && ReadEnabled(enableIkBakeProbe, true);
 
         internal static bool RestoreVanillaArmsGlueEnabled =>
             initialized && ReadEnabled(restoreVanillaArmsGlue, true);
@@ -301,6 +321,11 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     "Enable Remote Rig Diff Probe",
                     false,
                     "When enabled, every remote live-body session logs third-person arm-target, leg-target, and shin local TRS at session begin, two LateUpdates after restore, and five seconds after restore. This verbose diagnostics probe remains opt-in.");
+                enableIkBakeProbe = config.Bind(
+                    ConfigSection,
+                    "Enable IK Bake Probe",
+                    true,
+                    "When enabled, the ChainIK and TwoBoneIK constraints under the local player's first-person arms metarig are sampled at four checkpoints per live-body session (first PlayerControllerB.Awake, immediately before the start rebuild, immediately before the restore rebuild, and two LateUpdates after restore) and each sample logs the world-space link distances, maxReach, and tip-versus-target offsets that RigBuilder.Build() bakes permanently into its job arrays. A link distance or bone lossy scale below 0.001 at either pre-build checkpoint raises a warning, because that bake outlives the session and leaves the affected limb mispositioned in vanilla animation. Four compact rounds per session; safe to leave on.");
                 restoreStateMode = config.Bind(
                     ConfigSection,
                     "Restore State Mode",
@@ -336,13 +361,15 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 ReadEnabled(enableExternalCameraPresentationLogger, false);
             bool remoteRigDiffProbeEnabled =
                 ReadEnabled(enableRemoteRigDiffProbe, false);
+            bool ikBakeProbeEnabled = ReadEnabled(enableIkBakeProbe, true);
             initialized = true;
 
             if (frameLoggerEnabled)
                 SubscribeRenderSampler();
 
             if (frameLoggerEnabled || rigDiffEnabled || pristineRigControlPoseEnabled ||
-                pristineThirdPersonRigControlPoseEnabled || remoteRigDiffProbeEnabled)
+                pristineThirdPersonRigControlPoseEnabled || remoteRigDiffProbeEnabled ||
+                ikBakeProbeEnabled)
             {
                 try
                 {
@@ -370,7 +397,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 cameraChainPositionSnapToRestEnabled ||
                 healCameraDriftAtSessionStartEnabled ||
                 visorPoseEnabled || externalCameraPresentationLoggerEnabled ||
-                remoteRigDiffProbeEnabled)
+                remoteRigDiffProbeEnabled || ikBakeProbeEnabled)
             {
                 logger?.LogInfo(
                     "[RestoreSeam] diagnostics_ready: " +
@@ -390,7 +417,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     $"healCameraDriftAtSessionStart={healCameraDriftAtSessionStartEnabled} " +
                     $"restoreVisorPose={visorPoseEnabled} " +
                     $"externalCameraPresentationLogger={externalCameraPresentationLoggerEnabled} " +
-                    $"remoteRigDiffProbe={remoteRigDiffProbeEnabled}.");
+                    $"remoteRigDiffProbe={remoteRigDiffProbeEnabled} " +
+                    $"ikBakeProbe={ikBakeProbeEnabled}.");
             }
         }
 
@@ -428,6 +456,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             prepareForLiveBodyStartUninitializedLogged = false;
             remoteRigProbeSessionBeginUninitializedLogged = false;
             playerAwakeCaptureUninitializedLogged = false;
+            IkBakeProbeAwakeLoggedPlayers.Clear();
+            ikBakeProbePlayer = null;
+            pendingIkBakeProbeLateUpdates = -1;
             nextRemoteRigProbeId = 0;
             enableRestoreSeamFrameLogger = null;
             enableRestoreRigStateLogger = null;
@@ -448,6 +479,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             hardVisorGlueDuringSession = null;
             enableExternalCameraPresentationLogger = null;
             enableRemoteRigDiffProbe = null;
+            enableIkBakeProbe = null;
             restoreStateMode = null;
             logger = null;
         }
@@ -805,6 +837,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 return;
 
             NotifyRemoteRigProbeRestoreCompleted(player);
+            ScheduleIkBakeProbeAfterRestore(player);
             if (!ReadEnabled(enablePristineRigDiffProbe, false) ||
                 pristineRig == null || !ReferenceEquals(pristineRig.Player, player))
             {
@@ -1027,6 +1060,394 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             }
         }
 
+        /// <summary>
+        /// Records the reference bake state at PlayerControllerB.Awake, before any API session can
+        /// have collapsed a bone. The local player is not resolvable this early, so this samples
+        /// once per player — the line carries the player identity, and the local player's own
+        /// awake line is the baseline its later checkpoints are read against.
+        /// </summary>
+        internal static void LogIkBakeProbeAtPlayerAwake(PlayerControllerB player)
+        {
+            if (!IkBakeProbeEnabled || player == null)
+                return;
+
+            if (!IkBakeProbeAwakeLoggedPlayers.Add(player))
+                return;
+
+            LogIkBakeProbeCore(player, IkBakeProbePhaseAwake);
+        }
+
+        /// <summary>
+        /// Samples every ChainIK and TwoBoneIK constraint under the local player's first-person
+        /// arms metarig — the rig this mod rebuilds — and logs the
+        /// world-space measurements RigBuilder.Build() bakes into its persistent job arrays. The
+        /// pre-build checkpoints also warn when a link distance or bone lossy scale is degenerate,
+        /// because Build() never re-derives those values once the session ends.
+        /// </summary>
+        internal static void LogIkBakeProbe(PlayerControllerB player, string phase)
+        {
+            if (!IkBakeProbeEnabled || !IsLocalPlayer(player))
+                return;
+
+            LogIkBakeProbeCore(player, phase);
+        }
+
+        private static void ScheduleIkBakeProbeAfterRestore(PlayerControllerB player)
+        {
+            if (!IkBakeProbeEnabled || !IsLocalPlayer(player))
+                return;
+
+            ikBakeProbePlayer = player;
+            pendingIkBakeProbeLateUpdates = 2;
+        }
+
+        private static void TickIkBakeProbe()
+        {
+            if (pendingIkBakeProbeLateUpdates <= 0)
+                return;
+
+            pendingIkBakeProbeLateUpdates--;
+            if (pendingIkBakeProbeLateUpdates > 0)
+                return;
+
+            PlayerControllerB player = ikBakeProbePlayer;
+            ikBakeProbePlayer = null;
+            pendingIkBakeProbeLateUpdates = -1;
+            LogIkBakeProbeCore(player, IkBakeProbePhasePostRestore);
+        }
+
+        private static void LogIkBakeProbeCore(PlayerControllerB player, string phase)
+        {
+            string playerDescription = DescribePlayer(player);
+            try
+            {
+                Transform playerRoot = player != null ? player.transform : null;
+                Transform armsMetarig = player != null ? player.playerModelArmsMetarig : null;
+                // Scope to the first-person arms rig this mod actually rebuilds. Scanning the whole
+                // player would also sweep the third-person model, held items, and other mods' rigs,
+                // so degenerate warnings could fire for constraints nothing here ever touched.
+                Transform scanRoot = armsMetarig;
+                string scanRootSource = "arms-metarig";
+                if (scanRoot == null)
+                {
+                    scanRoot = FindChildRecursive(playerRoot, "RigArms");
+                    scanRootSource = "rig-arms";
+                }
+
+                if (scanRoot == null)
+                {
+                    scanRoot = playerRoot;
+                    scanRootSource = "player-fallback";
+                }
+
+                if (scanRoot == null)
+                {
+                    logger?.LogInfo(
+                        "[IkBakeProbe] sample_unavailable: " +
+                        $"frame={Time.frameCount} phase='{phase}' " +
+                        $"player='{playerDescription}' reason='rig_root_unavailable'.");
+                    return;
+                }
+
+                Type twoBoneIkConstraintType = ResolveTwoBoneIkConstraintType();
+                Type chainIkConstraintType = ResolveChainIkConstraintType();
+                Component[] twoBoneConstraints =
+                    ReadIkConstraints(scanRoot, twoBoneIkConstraintType);
+                Component[] chainConstraints =
+                    ReadIkConstraints(scanRoot, chainIkConstraintType);
+                logger?.LogInfo(
+                    "[IkBakeProbe] sample_begin: " +
+                    $"frame={Time.frameCount} phase='{phase}' player='{playerDescription}' " +
+                    $"scanRoot='{scanRootSource}' root='{scanRoot.name}' " +
+                    $"twoBoneIkConstraints={twoBoneConstraints.Length} " +
+                    $"chainIkConstraints={chainConstraints.Length} " +
+                    $"degenerateThreshold={FormatFloat(IkBakeDegenerateThreshold)}.");
+
+                bool warnOnDegenerate =
+                    string.Equals(phase, IkBakeProbePhasePreStartBuild, StringComparison.Ordinal) ||
+                    string.Equals(phase, IkBakeProbePhasePreRestoreBuild, StringComparison.Ordinal);
+                int logged = 0;
+                int degenerate = 0;
+                for (int i = 0; i < twoBoneConstraints.Length; i++)
+                {
+                    if (LogIkBakeConstraint(
+                            twoBoneConstraints[i],
+                            "TwoBoneIK",
+                            scanRoot,
+                            phase,
+                            playerDescription,
+                            warnOnDegenerate,
+                            out bool constraintDegenerate))
+                    {
+                        logged++;
+                    }
+
+                    if (constraintDegenerate)
+                        degenerate++;
+                }
+
+                for (int i = 0; i < chainConstraints.Length; i++)
+                {
+                    if (LogIkBakeConstraint(
+                            chainConstraints[i],
+                            "ChainIK",
+                            scanRoot,
+                            phase,
+                            playerDescription,
+                            warnOnDegenerate,
+                            out bool constraintDegenerate))
+                    {
+                        logged++;
+                    }
+
+                    if (constraintDegenerate)
+                        degenerate++;
+                }
+
+                logger?.LogInfo(
+                    "[IkBakeProbe] sample_end: " +
+                    $"frame={Time.frameCount} phase='{phase}' player='{playerDescription}' " +
+                    $"constraints={logged} degenerate={degenerate}.");
+            }
+            catch (Exception exception)
+            {
+                logger?.LogWarning(
+                    "[IkBakeProbe] sample_failed: " +
+                    $"frame={Time.frameCount} phase='{phase}' player='{playerDescription}' " +
+                    $"reason='{SanitizeLogValue(exception.Message)}'.");
+            }
+        }
+
+        private static Component[] ReadIkConstraints(Transform root, Type constraintType)
+        {
+            if (root == null || constraintType == null)
+                return Array.Empty<Component>();
+
+            try
+            {
+                return root.GetComponentsInChildren(constraintType, includeInactive: true) ??
+                       Array.Empty<Component>();
+            }
+            catch
+            {
+                return Array.Empty<Component>();
+            }
+        }
+
+        private static bool LogIkBakeConstraint(
+            Component component,
+            string kind,
+            Transform pathRoot,
+            string phase,
+            string playerDescription,
+            bool warnOnDegenerate,
+            out bool degenerate)
+        {
+            degenerate = false;
+            if (component == null)
+                return false;
+
+            string path = "<unknown>";
+            try
+            {
+                path = GetRelativePath(pathRoot, component.transform);
+                object data = ReadMember(component, null, "m_Data");
+                Transform root = ReadTransformMember(data, "root", "m_Root");
+                Transform mid = ReadTransformMember(data, "mid", "m_Mid");
+                Transform tip = ReadTransformMember(data, "tip", "m_Tip");
+                Transform target = ReadTransformMember(data, "target", "m_Target");
+                float weight = ReadFloat(component, "weight", "m_Weight");
+                bool maintainTargetPositionOffset = ReadBool(
+                    data, "maintainTargetPositionOffset", "m_MaintainTargetPositionOffset");
+                bool maintainTargetRotationOffset = ReadBool(
+                    data, "maintainTargetRotationOffset", "m_MaintainTargetRotationOffset");
+
+                // Mirrors ConstraintsUtils.ExtractChain: TwoBoneIK bakes root->mid->tip, ChainIK
+                // walks tip up to root. These are the exact segments Build() measures.
+                List<Transform> chain = mid != null
+                    ? BuildIkBoneList(root, mid, tip)
+                    : ExtractIkChain(root, tip);
+                var links = new StringBuilder();
+                float maxReach = 0f;
+                float minLinkDistance = float.PositiveInfinity;
+                string minLinkName = "<none>";
+                for (int i = 0; i + 1 < chain.Count; i++)
+                {
+                    Transform from = chain[i];
+                    Transform to = chain[i + 1];
+                    if (from == null || to == null)
+                        continue;
+
+                    float distance = Vector3.Distance(from.position, to.position);
+                    maxReach += distance;
+                    if (distance < minLinkDistance)
+                    {
+                        minLinkDistance = distance;
+                        minLinkName = from.name + ">" + to.name;
+                    }
+
+                    if (links.Length > 0)
+                        links.Append('|');
+                    links.Append(from.name).Append('>').Append(to.name).Append('=')
+                        .Append(FormatFloat(distance));
+                }
+
+                float minLossyScale = float.PositiveInfinity;
+                string minLossyScaleName = "<none>";
+                TrackMinLossyScale(root, ref minLossyScale, ref minLossyScaleName);
+                TrackMinLossyScale(mid, ref minLossyScale, ref minLossyScaleName);
+                TrackMinLossyScale(tip, ref minLossyScale, ref minLossyScaleName);
+
+                float tipToTargetDistance = tip != null && target != null
+                    ? (tip.position - target.position).magnitude
+                    : float.NaN;
+                float tipToTargetAngle = tip != null && target != null
+                    ? Quaternion.Angle(target.rotation, tip.rotation)
+                    : float.NaN;
+                degenerate =
+                    (chain.Count > 1 && minLinkDistance < IkBakeDegenerateThreshold) ||
+                    minLossyScale < IkBakeDegenerateThreshold;
+
+                logger?.LogInfo(
+                    "[IkBakeProbe] constraint: " +
+                    $"frame={Time.frameCount} phase='{phase}' player='{playerDescription}' " +
+                    $"kind='{kind}' path='{path}' weight={FormatFloat(weight)} " +
+                    $"maintainTargetPositionOffset={maintainTargetPositionOffset} " +
+                    $"maintainTargetRotationOffset={maintainTargetRotationOffset} " +
+                    $"rootLossyScaleX={FormatLossyScaleX(root)} " +
+                    $"midLossyScaleX={FormatLossyScaleX(mid)} " +
+                    $"tipLossyScaleX={FormatLossyScaleX(tip)} " +
+                    $"chainLength={chain.Count} links='{DescribeIkLinks(links, root, mid, tip)}' " +
+                    $"maxReach={FormatFloat(maxReach)} " +
+                    $"tipToTargetDistance={FormatFloat(tipToTargetDistance)} " +
+                    $"tipToTargetAngleDegrees={FormatFloat(tipToTargetAngle)} " +
+                    $"degenerate={degenerate}.");
+
+                if (degenerate && warnOnDegenerate)
+                {
+                    logger?.LogWarning(
+                        "[IkBakeProbe] degenerate_bake_input: " +
+                        $"frame={Time.frameCount} phase='{phase}' player='{playerDescription}' " +
+                        $"kind='{kind}' path='{path}' " +
+                        $"smallestLink='{minLinkName}' " +
+                        $"smallestLinkDistance={FormatFloat(minLinkDistance)} " +
+                        $"smallestLossyScaleBone='{minLossyScaleName}' " +
+                        $"smallestLossyScaleComponent={FormatFloat(minLossyScale)} " +
+                        $"threshold={FormatFloat(IkBakeDegenerateThreshold)} " +
+                        $"rootLossyScale={FormatLossyScale(root)} " +
+                        $"midLossyScale={FormatLossyScale(mid)} " +
+                        $"tipLossyScale={FormatLossyScale(tip)} " +
+                        "impact='RigBuilder.Build() is about to bake these world-space link " +
+                        "lengths, maxReach, and maintain-offset values permanently into the IK " +
+                        "job arrays; they are never re-derived, so a collapsed bone here leaves " +
+                        "this limb mispositioned in vanilla animation after the session ends'.");
+                }
+
+                return true;
+            }
+            catch (Exception exception)
+            {
+                logger?.LogInfo(
+                    "[IkBakeProbe] constraint_unavailable: " +
+                    $"frame={Time.frameCount} phase='{phase}' player='{playerDescription}' " +
+                    $"kind='{kind}' path='{path}' " +
+                    $"reason='read_failed:{SanitizeLogValue(exception.Message)}'.");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Distinguishes "no measurable links" causes so an unresolvable chain does not read like a
+        /// collapsed one: an empty link list with real bones means the tip is not under the root.
+        /// </summary>
+        private static string DescribeIkLinks(
+            StringBuilder links,
+            Transform root,
+            Transform mid,
+            Transform tip)
+        {
+            if (links != null && links.Length > 0)
+                return links.ToString();
+            if (root == null || tip == null)
+                return "<bones-missing>";
+            return mid != null ? "<none>" : "<tip-not-under-root>";
+        }
+
+        private static List<Transform> BuildIkBoneList(Transform root, Transform mid, Transform tip)
+        {
+            var bones = new List<Transform>(3);
+            if (root != null)
+                bones.Add(root);
+            if (mid != null)
+                bones.Add(mid);
+            if (tip != null)
+                bones.Add(tip);
+            return bones;
+        }
+
+        private static List<Transform> ExtractIkChain(Transform root, Transform tip)
+        {
+            var chain = new List<Transform>();
+            if (root == null || tip == null)
+                return chain;
+
+            Transform current = tip;
+            int guard = 0;
+            while (current != null && !ReferenceEquals(current, root) &&
+                   guard++ < IkBakeChainWalkGuard)
+            {
+                chain.Add(current);
+                current = current.parent;
+            }
+
+            if (!ReferenceEquals(current, root))
+            {
+                chain.Clear();
+                return chain;
+            }
+
+            chain.Add(root);
+            chain.Reverse();
+            return chain;
+        }
+
+        private static void TrackMinLossyScale(
+            Transform transform,
+            ref float minComponent,
+            ref string minName)
+        {
+            if (transform == null)
+                return;
+
+            Vector3 lossyScale = transform.lossyScale;
+            float smallest = Mathf.Min(
+                Mathf.Abs(lossyScale.x),
+                Mathf.Min(Mathf.Abs(lossyScale.y), Mathf.Abs(lossyScale.z)));
+            if (smallest >= minComponent)
+                return;
+
+            minComponent = smallest;
+            minName = transform.name;
+        }
+
+        private static string FormatLossyScaleX(Transform transform)
+        {
+            return transform != null ? FormatFloat(transform.lossyScale.x) : "<none>";
+        }
+
+        private static string FormatLossyScale(Transform transform)
+        {
+            return transform != null ? FormatVector(transform.lossyScale) : "<none>";
+        }
+
+        private static Transform ReadTransformMember(
+            object instance,
+            string propertyName,
+            string fieldName)
+        {
+            return ReadMember(instance, propertyName, fieldName) as Transform;
+        }
+
         internal static void LogRigAnimatorStates(Animator animator, string checkpoint)
         {
             if (!initialized || !ReadEnabled(enableRestoreRigStateLogger, false))
@@ -1086,11 +1507,15 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             bool remoteRigDiffProbeEnabled =
                 ReadEnabled(enableRemoteRigDiffProbe, false);
             if (!frameLoggerEnabled && !pristineRigCaptureEnabled &&
-                !remoteRigDiffProbeEnabled && PendingRemoteRigProbes.Count == 0)
+                !remoteRigDiffProbeEnabled && PendingRemoteRigProbes.Count == 0 &&
+                pendingIkBakeProbeLateUpdates <= 0)
                 return;
 
             try
             {
+                // Drained first: a throwing remote probe must not strand the ik probe's countdown,
+                // which would leave its early-return gate defeated for every later frame.
+                TickIkBakeProbe();
                 TickRemoteRigDiffProbes(remoteRigDiffProbeEnabled);
                 if (!frameLoggerEnabled && !pristineRigCaptureEnabled)
                     return;
@@ -1163,6 +1588,11 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             pristineRig = null;
             customAnimationHasRun = false;
             pendingRigDiffLateUpdates = -1;
+            // Pooled player objects survive a menu return; clearing here re-baselines the next
+            // round's Awake instead of suppressing it as already-logged.
+            IkBakeProbeAwakeLoggedPlayers.Clear();
+            ikBakeProbePlayer = null;
+            pendingIkBakeProbeLateUpdates = -1;
             ResetRestoreHistory();
         }
 
@@ -3634,6 +4064,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 .CapturePristineThirdPersonRigPoseAtPlayerAwake(__instance);
             InteractionAnimationApiRestoreDiagnostics
                 .CapturePristineCameraChainPoseAtPlayerAwake(__instance);
+            InteractionAnimationApiRestoreDiagnostics
+                .LogIkBakeProbeAtPlayerAwake(__instance);
         }
     }
 }
