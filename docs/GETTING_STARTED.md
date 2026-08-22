@@ -95,7 +95,7 @@ Copy the pack construction and request code, choose a stable PackId, and keep th
 
 When you ship a mod that uses this API, depend on the released package instead of building from source:
 
-- **Thunderstore dependency**: add `y4ngz313-Y4NGZInteractions-1.0.0` to your mod's `manifest.json` dependencies so mod managers install the API automatically.
+- **Thunderstore dependency**: add `y4ngz313-Y4NGZInteractions-1.0.1` to your mod's `manifest.json` dependencies so mod managers install the API automatically.
 - **BepInEx load order**: declare the dependency on the plugin GUID so your plugin loads after the API is initialized:
 
 ~~~csharp

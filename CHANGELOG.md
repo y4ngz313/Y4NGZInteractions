@@ -1,8 +1,16 @@
 # Changelog
 
-Last updated: 2026-08-19
+Last updated: 2026-08-22
 
-## 1.0.0 - unreleased
+## 1.0.1
+
+- Survive BepInEx `HideManagerGameObject=false`: the runtime host owns its
+  lifecycle on a `DontDestroyOnLoad` object, and teardown only runs on a real
+  application quit. Fixes the API dying immediately after chainloader in some
+  mod-manager profiles.
+- Added IK bake telemetry and a degenerate-input warning to `IkBakeProbe`.
+
+## 1.0.0
 
 - Finalized the standalone local presentation, ownership, and restoration
   contract for BodyWorld and DedicatedLocalViewmodel interactions.

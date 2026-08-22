@@ -12,7 +12,7 @@ gameplay by itself; install it when another package declares it as a dependency.
 - Install it with r2modman or Thunderstore Mod Manager. BepInExPack is installed
   automatically.
 - For a manual install, place `Y4NGZInteractions.dll` in `BepInEx/plugins/`.
-- Version 1.0.0 is built against Lethal Company v81. A game update that changes
+- Version 1.0.1 is built against Lethal Company v81. A game update that changes
   the player rig or animator may require a new release.
 
 ## What the API provides
@@ -34,7 +34,7 @@ The public entry point is `LCInteractionAnimationAPI`.
 
 ## For mod authors
 
-Add `y4ngz313-Y4NGZInteractions-1.0.0` to your Thunderstore manifest, reference
+Add `y4ngz313-Y4NGZInteractions-1.0.1` to your Thunderstore manifest, reference
 `Y4NGZInteractions.dll` at compile time with `Private=false`, and declare a hard
 BepInEx dependency so the API initializes before your plugin:
 

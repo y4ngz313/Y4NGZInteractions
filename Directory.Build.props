@@ -1,9 +1,11 @@
 <Project>
   <PropertyGroup>
-    <Y4NGZInteractionsVersion>1.0.0</Y4NGZInteractionsVersion>
+    <Y4NGZInteractionsVersion>1.0.1</Y4NGZInteractionsVersion>
     <Version>$(Y4NGZInteractionsVersion)</Version>
+    <!-- AssemblyVersion stays 1.0.0.0 across the 1.0.x patch line so assemblies
+         compiled against 1.0.0 keep binding without a rebuild. -->
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>1.0.0.0</FileVersion>
+    <FileVersion>1.0.1.0</FileVersion>
     <InformationalVersion>$(Y4NGZInteractionsVersion)</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <RestoreAdditionalProjectSources>
