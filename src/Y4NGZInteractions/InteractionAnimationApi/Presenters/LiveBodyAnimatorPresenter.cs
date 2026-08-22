@@ -392,10 +392,22 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             InteractionAnimationApiRestoreDiagnostics.NotifyLiveBodyAnimationRan(
                 context.Request.Player);
+            double ikProbeMs = 0d;
             if (!body.rebuildRigBuilders)
+            {
                 SuppressLiveRigBuilders();
+            }
             else
+            {
+                // Build() bakes world-space IK link lengths and target offsets permanently. Sample
+                // what it is about to read while the pre-build pose is still observable. The probe
+                // is lapped separately so rigBuildMs stays a pure rig-build measurement.
+                InteractionAnimationApiRestoreDiagnostics.LogIkBakeProbe(
+                    context.Request.Player,
+                    InteractionAnimationApiRestoreDiagnostics.IkBakeProbePhasePreStartBuild);
+                ikProbeMs = LapMilliseconds(seamTiming);
                 RebuildRigBuilders("start");
+            }
             double rigBuildMs = LapMilliseconds(seamTiming);
 
             ReapplySeamCameraRotation(startCameraRotation, "start", animatorRestored: true);
@@ -440,7 +452,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     $"totalMs={seamTiming.TotalMilliseconds:0.###} setupMs={setupMs:0.###} " +
                     $"bundleLoadMs={bundleLoadMs:0.###} cameraCaptureMs={cameraCaptureMs:0.###} " +
                     $"visorCaptureMs={visorCaptureMs:0.###} " +
-                    $"controllerSwapMs={controllerSwapMs:0.###} rigBuildMs={rigBuildMs:0.###} " +
+                    $"controllerSwapMs={controllerSwapMs:0.###} ikProbeMs={ikProbeMs:0.###} " +
+                    $"rigBuildMs={rigBuildMs:0.###} " +
                     $"cameraReapplyMs={cameraReapplyMs:0.###} visorReapplyMs={visorReapplyMs:0.###} " +
                     $"animatorUpdateMs={animatorUpdateMs:0.###} " +
                     $"rigEvaluateMs={rigEvaluateMs:0.###} diagnosticsMs={diagnosticsMs:0.###} " +
@@ -3429,6 +3442,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             }
             RestoreThirdPersonRigControlPose(animatorRestored);
             double poseRestoreMs = LapMilliseconds(seamTiming);
+            // Sampled before the suppressed rig builders are re-enabled: re-enabling implicitly
+            // rebuilds, so this is the last point where the restore-phase bake inputs are intact.
+            // Lapped separately so rigBuildMs stays a pure rig-build measurement.
+            InteractionAnimationApiRestoreDiagnostics.LogIkBakeProbe(
+                player,
+                InteractionAnimationApiRestoreDiagnostics.IkBakeProbePhasePreRestoreBuild);
+            double ikProbeMs = LapMilliseconds(seamTiming);
             RestoreLiveRigBuilders();
             InteractionAnimationApiRestoreDiagnostics.LogRigAnimatorStates(
                 bodyAnimator,
@@ -3478,7 +3498,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     $"cameraCaptureMs={cameraCaptureMs:0.###} visorCaptureMs={visorCaptureMs:0.###} " +
                     $"propDestroyMs={propDestroyMs:0.###} " +
                     $"animatorRestoreMs={animatorRestoreMs:0.###} poseRestoreMs={poseRestoreMs:0.###} " +
-                    $"rigBuildMs={rigBuildMs:0.###} seamGlueMs={seamGlueMs:0.###} " +
+                    $"ikProbeMs={ikProbeMs:0.###} rigBuildMs={rigBuildMs:0.###} " +
+                    $"seamGlueMs={seamGlueMs:0.###} " +
                     $"animatorUpdateMs={animatorUpdateMs:0.###} rigEvaluateMs={rigEvaluateMs:0.###} " +
                     $"cleanupMs={cleanupMs:0.###}.");
             }
