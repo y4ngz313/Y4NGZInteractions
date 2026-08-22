@@ -13,16 +13,34 @@ namespace Y4NGZInteractions
         internal const string Name = "Y4NGZInteractions";
         internal const string Version = BuildVersion.Value;
 
+        /// <summary>Name of the GameObject owning <see cref="InteractionRuntimeHost"/>.</summary>
+        internal const string HostObjectName = "Y4NGZInteractions_Host";
+
         internal static Plugin Instance { get; private set; }
         internal static ManualLogSource Log { get; private set; }
 
-        private Harmony harmony;
+        /// <summary>
+        /// Owner of the runtime lifecycle. Use this — never <see cref="Instance"/> — to start
+        /// coroutines or add components: this plugin component rides on BepInEx's shared,
+        /// externally destroyable manager object, the host does not (#31).
+        /// </summary>
+        internal static InteractionRuntimeHost Host { get; private set; }
 
         private void Awake()
         {
             Instance = this;
             Log = Logger;
-            harmony = new Harmony(Guid);
+            var harmony = new Harmony(Guid);
+
+            // #31: the per-frame tick and teardown must not live on this component. See
+            // InteractionRuntimeHost for why BepInEx_Manager is not a safe place to sit.
+            var hostObject = new UnityEngine.GameObject(HostObjectName)
+            {
+                hideFlags = UnityEngine.HideFlags.HideAndDontSave,
+            };
+            UnityEngine.Object.DontDestroyOnLoad(hostObject);
+            Host = hostObject.AddComponent<InteractionRuntimeHost>();
+            Host.Initialize(harmony, Logger);
 
             InitializeModule("Interaction Animation API", () => InteractionAnimationApiPlugin.Initialize(Config, Logger));
             InitializeModule(
@@ -35,33 +53,10 @@ namespace Y4NGZInteractions
             Logger.LogInfo($"{Name} v{Version} loaded.");
         }
 
-        private void LateUpdate()
-        {
-            InteractionAnimationApiRestoreDiagnostics.BeginCoordinatorLateUpdateTick();
-            try
-            {
-                InteractionAnimationApiPlugin.Tick(UnityEngine.Time.deltaTime);
-            }
-            finally
-            {
-                InteractionAnimationApiRestoreDiagnostics.EndCoordinatorLateUpdateTick();
-            }
-        }
-
-        private void OnDestroy()
-        {
-            try
-            {
-                InteractionAnimationApiPlugin.Shutdown();
-                InteractionAnimationApiRestoreDiagnostics.Shutdown();
-            }
-            catch (Exception exception)
-            {
-                Logger.LogWarning($"{Name} shutdown warning: {exception.Message}");
-            }
-
-            harmony?.UnpatchSelf();
-        }
+        // No OnDestroy here on purpose: this component is destroyed with BepInEx's manager object
+        // at chainloader startup in profiles where HideManagerGameObject is false, and tearing the
+        // static API down there killed it for the whole session (#31). Shutdown and Harmony
+        // restoration belong to InteractionRuntimeHost.
 
         private void InitializeModule(string label, Action initialize)
         {

@@ -373,7 +373,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             {
                 try
                 {
-                    GameObject host = Plugin.Instance != null ? Plugin.Instance.gameObject : null;
+                    GameObject host = Plugin.Host != null ? Plugin.Host.gameObject : null;
                     if (host != null)
                         runner = host.AddComponent<InteractionAnimationRestoreDiagnosticsRunner>();
                     else

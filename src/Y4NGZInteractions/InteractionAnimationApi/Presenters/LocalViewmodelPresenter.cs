@@ -75,7 +75,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             if (PreloadingBundlePaths.Contains(bundlePath))
                 return true;
 
-            if (Y4NGZInteractions.Plugin.Instance == null)
+            if (Y4NGZInteractions.Plugin.Host == null)
             {
                 logger?.LogWarning(
                     "[LCInteractionAnimationAPI] viewmodel.bundle_preload_unavailable: plugin instance missing.");
@@ -87,7 +87,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             logger?.LogInfo(
                 "[LCInteractionAnimationAPI] viewmodel.bundle_preload_started: " +
                 $"path='{bundlePath}' fileBytes={new FileInfo(bundlePath).Length}.");
-            Y4NGZInteractions.Plugin.Instance.StartCoroutine(
+            Y4NGZInteractions.Plugin.Host.StartCoroutine(
                 PreloadBundleCoroutine(bundlePath, bundleInternalName, logger));
             return true;
         }
@@ -666,10 +666,10 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
         private void BeginPostFrameRendererDiagnostics(Camera camera)
         {
-            if (Y4NGZInteractions.Plugin.Instance == null || context == null)
+            if (Y4NGZInteractions.Plugin.Host == null || context == null)
                 return;
 
-            Y4NGZInteractions.Plugin.Instance.StartCoroutine(
+            Y4NGZInteractions.Plugin.Host.StartCoroutine(
                 PostFrameRendererDiagnosticsCoroutine(context.Handle, camera));
         }
 
