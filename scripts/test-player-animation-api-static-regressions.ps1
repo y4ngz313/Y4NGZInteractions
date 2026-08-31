@@ -54,6 +54,64 @@ foreach ($term in $required) {
     }
 }
 
+$presenterPath = Join-Path $sourceRoot "InteractionAnimationApi/Presenters/LiveBodyAnimatorPresenter.cs"
+$presenterSource = Get-Content -LiteralPath $presenterPath -Raw
+$thirdPersonPoseRequired = @(
+    "scopedThirdPersonPoseSnapshot",
+    "CaptureScopedThirdPersonPose",
+    "RestoreScopedThirdPersonPose",
+    "CaptureDescendantsExceptBranch",
+    "ResolveDirectChildBranch",
+    "transform.IsChildOf(excludedBranch)",
+    "live_body.scoped_tp_pose_captured",
+    "live_body.scoped_tp_pose_restored"
+)
+foreach ($term in $thirdPersonPoseRequired) {
+    if (-not $presenterSource.Contains($term)) {
+        throw "Scoped third-person pose restore term is missing: $term"
+    }
+}
+
+$captureIndex = $presenterSource.IndexOf("CaptureScopedThirdPersonPose();")
+$controllerSwapIndex = $presenterSource.IndexOf("if (!TryApplyController(body, out reason))")
+if ($captureIndex -lt 0 -or $controllerSwapIndex -lt 0 -or $captureIndex -ge $controllerSwapIndex) {
+    throw "Third-person pose must be captured before the authored controller is applied."
+}
+
+$stopStart = $presenterSource.IndexOf("public void Stop(InteractionAnimationStopReason stopReason)")
+$stopEnd = $presenterSource.IndexOf("/// <summary>", $stopStart + 1)
+if ($stopStart -lt 0 -or $stopEnd -le $stopStart) {
+    throw "Could not isolate LiveBodyAnimatorPresenter.Stop for restore-order validation."
+}
+$stopSource = $presenterSource.Substring($stopStart, $stopEnd - $stopStart)
+$locomotionSyncIndex = $stopSource.IndexOf('SyncVanillaLocomotionParameters("stop");')
+$thirdPersonRestoreIndex = $stopSource.IndexOf("RestoreScopedThirdPersonPose();")
+$firstPersonRestoreIndex = $stopSource.IndexOf("RestoreScopedFirstPersonPose();")
+$rigControlRestoreIndex = $stopSource.IndexOf("RestoreThirdPersonRigControlPose(animatorRestored);")
+$preBuildProbeIndex = $stopSource.IndexOf(
+    "InteractionAnimationApiRestoreDiagnostics.IkBakeProbePhasePreRestoreBuild")
+if ($locomotionSyncIndex -lt 0 -or
+    $thirdPersonRestoreIndex -le $locomotionSyncIndex -or
+    $firstPersonRestoreIndex -le $thirdPersonRestoreIndex -or
+    $rigControlRestoreIndex -le $firstPersonRestoreIndex -or
+    $preBuildProbeIndex -le $rigControlRestoreIndex) {
+    throw "Scoped third-person pose restore order is unsafe."
+}
+
+$guardedRestore = [regex]::Match(
+    $stopSource,
+    '(?s)if \(animatorRestored\)\s*\{.*?RestoreScopedThirdPersonPose\(\);.*?\}\s*RestoreThirdPersonRigControlPose')
+if (-not $guardedRestore.Success) {
+    throw "Third-person pose restore must remain guarded by successful Animator ownership restoration."
+}
+
+$snapshotClearCount = [regex]::Matches(
+    $presenterSource,
+    "scopedThirdPersonPoseSnapshot = null;").Count
+if ($snapshotClearCount -lt 3) {
+    throw "Third-person pose snapshot must be cleared on capture, normal stop, and failed start."
+}
+
 $syncGuardPath = Join-Path $sourceRoot "InteractionAnimationApi/PlayerAnimationSyncStateGuardPatch.cs"
 if (-not (Test-Path -LiteralPath $syncGuardPath)) {
     throw "Multiplayer animation sync state guard is missing."

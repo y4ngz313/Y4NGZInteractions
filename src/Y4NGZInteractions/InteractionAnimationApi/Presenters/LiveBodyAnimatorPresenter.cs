@@ -80,6 +80,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private Transform rigControlRoot;
         private InteractionAnimationApiRestoreDiagnostics.ThirdPersonRigPoseSnapshot
             thirdPersonRigControlPoseSnapshot;
+        private TransformPoseSnapshot scopedThirdPersonPoseSnapshot;
         private TransformPoseSnapshot scopedFirstPersonPoseSnapshot;
         private bool rigEvaluateMethodMissingLogged;
         private int fullBodyLayerIndex = -1;
@@ -352,6 +353,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             // This must be the first session-state capture: the guard reference represents the
             // camera before diagnostics, bundle work, or the authored controller can touch it.
             CaptureLocalCameraBaseline();
+            CaptureScopedThirdPersonPose();
             SeamPhaseStopwatch seamTiming =
                 InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled
                     ? new SeamPhaseStopwatch()
@@ -2276,6 +2278,27 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 "includesMetarigRoot=True.");
         }
 
+        private void CaptureScopedThirdPersonPose()
+        {
+            scopedThirdPersonPoseSnapshot = null;
+            Transform animatorRoot = bodyAnimator != null ? bodyAnimator.transform : null;
+            if (animatorRoot == null)
+                return;
+
+            GameNetcodeStuff.PlayerControllerB player = context?.Request?.Player;
+            Transform gameplayCamera = player != null && player.gameplayCamera != null
+                ? player.gameplayCamera.transform
+                : null;
+            scopedThirdPersonPoseSnapshot = TransformPoseSnapshot.CaptureDescendantsExceptBranch(
+                animatorRoot,
+                gameplayCamera,
+                out Transform excludedCameraBranch);
+            context?.Logger?.LogInfo(
+                "[LCInteractionAnimationAPI] live_body.scoped_tp_pose_captured: " +
+                $"handle={context.Handle} transforms={scopedThirdPersonPoseSnapshot.Count} " +
+                $"cameraBranchExcluded='{(excludedCameraBranch != null ? excludedCameraBranch.name : "<none>")}'.");
+        }
+
         private void CaptureRigControlPose()
         {
             rigControlPoseSnapshot = null;
@@ -2815,6 +2838,18 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 $"captured={scopedFirstPersonPoseSnapshot.Count}.");
         }
 
+        private void RestoreScopedThirdPersonPose()
+        {
+            if (scopedThirdPersonPoseSnapshot == null)
+                return;
+
+            int restored = scopedThirdPersonPoseSnapshot.Restore();
+            context?.Logger?.LogInfo(
+                "[LCInteractionAnimationAPI] live_body.scoped_tp_pose_restored: " +
+                $"handle={context.Handle} restored={restored} " +
+                $"captured={scopedThirdPersonPoseSnapshot.Count}.");
+        }
+
         public bool TrySetAnimatorParameter(string parameterName, AnimatorControllerParameterType parameterType, float value)
         {
             if (!active || bodyAnimator == null || string.IsNullOrWhiteSpace(parameterName) ||
@@ -3103,11 +3138,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         /// session none of that runs at all, so this is the only thing driving the swapped
         /// controller's locomotion states.
         /// </summary>
-        private void SyncVanillaLocomotionParameters(string phase)
+        private bool SyncVanillaLocomotionParameters(string phase)
         {
             GameNetcodeStuff.PlayerControllerB player = context?.Request?.Player;
             if (player == null || bodyAnimator == null)
-                return;
+                return false;
+
+            bool crouchEntryMirrored = false;
 
             try
             {
@@ -3128,25 +3165,38 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 if (!walking)
                     SetBoolIfExists("Sideways", false);
 
-                // Vanilla enters crouch through the "startCrouching" trigger PLUS the
-                // "crouching" bool (decompiled PlayerControllerB.Crouch_performed). The bool
-                // alone never fires trigger-gated crouch transitions, so mirror the trigger on
-                // the crouch edge. Reset on the stand edge so a latched trigger cannot replay
-                // a crouch entry later.
-                if (hasLastSyncedCrouchState && crouching != lastSyncedCrouchState)
+                // PlayerControllerB.Crouch_performed already owns the trigger for the local
+                // player. Re-firing it here on the next tick visibly enters crouch twice. Only
+                // remote sessions need a synthesized edge because their owner-side input
+                // callback never runs against this swapped controller.
+                bool crouchStateChanged =
+                    hasLastSyncedCrouchState && crouching != lastSyncedCrouchState;
+                CrouchTriggerAction crouchTriggerAction = CrouchTriggerPolicy.ResolveEdgeAction(
+                    IsLocalPlayer(player),
+                    hasLastSyncedCrouchState,
+                    lastSyncedCrouchState,
+                    crouching);
+                if (crouchTriggerAction == CrouchTriggerAction.Fire)
                 {
-                    if (crouching)
-                        FireTriggerIfExists(VanillaStartCrouchingTrigger);
-                    else
-                        ResetTriggerIfExists(VanillaStartCrouchingTrigger);
-                    if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
-                    {
-                        context?.Logger?.LogInfo(
-                            "[RestoreSeam.locomotion] crouch_edge_trigger: " +
-                            $"frame={Time.frameCount} handle={context.Handle} phase='{phase}' " +
-                            $"crouching={crouching} " +
-                            $"action='{(crouching ? "fire" : "reset")}_startCrouching'.");
-                    }
+                    FireTriggerIfExists(VanillaStartCrouchingTrigger);
+                    crouchEntryMirrored = true;
+                }
+                else if (crouchTriggerAction == CrouchTriggerAction.Reset)
+                {
+                    ResetTriggerIfExists(VanillaStartCrouchingTrigger);
+                }
+                if (crouchStateChanged &&
+                    InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+                {
+                    string action = crouchTriggerAction == CrouchTriggerAction.Fire
+                        ? "fire_startCrouching"
+                        : crouchTriggerAction == CrouchTriggerAction.Reset
+                            ? "reset_startCrouching"
+                            : "skip_local_vanilla_owned_startCrouching";
+                    context?.Logger?.LogInfo(
+                        "[RestoreSeam.locomotion] crouch_edge_trigger: " +
+                        $"frame={Time.frameCount} handle={context.Handle} phase='{phase}' " +
+                        $"crouching={crouching} action='{action}'.");
                 }
                 hasLastSyncedCrouchState = true;
                 lastSyncedCrouchState = crouching;
@@ -3184,6 +3234,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
                     $"phase='{phase}' error='{exception.Message}'.");
             }
+
+            return crouchEntryMirrored;
         }
 
         private void DriveMovementParameter()
@@ -3437,6 +3489,11 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 // kills locomotion (sprint animation and camera bob) until the player stops and
                 // starts again. Re-sync those from the player's live state.
                 SyncVanillaLocomotionParameters("stop");
+                // Scoped controller restore deliberately avoids Animator.Rebind so it does not
+                // reset camera-owned transforms. Restore the animator's model descendants
+                // explicitly so bones written by the outgoing interaction cannot survive into
+                // vanilla locomotion.
+                RestoreScopedThirdPersonPose();
                 RestoreScopedFirstPersonPose();
                 RestoreRigControlPose();
             }
@@ -3513,6 +3570,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             rigControlPoseSnapshot = null;
             rigControlRoot = null;
             thirdPersonRigControlPoseSnapshot = null;
+            scopedThirdPersonPoseSnapshot = null;
             scopedFirstPersonPoseSnapshot = null;
             suppressedRigBuilders.Clear();
             rightArmIkTarget = null;
@@ -4045,13 +4103,18 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     }
                 }
 
+                bool crouchEntryMirroredDuringRestore = false;
                 bool restored = snapshot.Restore(
                     bodyAnimator,
                     appliedController,
                     rebindAnimator: !scopedRestore,
                     restoreMode: restoreStateMode,
                     syncParametersBeforeStateReplay:
-                        () => SyncVanillaLocomotionParameters("stop_pre_state_replay"),
+                        () =>
+                        {
+                            crouchEntryMirroredDuringRestore =
+                                SyncVanillaLocomotionParameters("stop_pre_state_replay");
+                        },
                     restoreBaseLayerState: !stanceMismatch);
 
                 bool preserveLiveBaseLayer = restored &&
@@ -4080,8 +4143,12 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 // would keep a standing base pose indefinitely, and the next session would then
                 // snapshot that broken pose as its baseline. Re-assert the crouch entry so the
                 // restored base layer matches the live stance.
-                if (preserveLiveBaseLayer && !liveBaseLayerStateReplayed &&
-                    currentCrouchingKnown && currentCrouching)
+                if (CrouchTriggerPolicy.ShouldAssertRestoreEntry(
+                    preserveLiveBaseLayer,
+                    liveBaseLayerStateReplayed,
+                    currentCrouchingKnown,
+                    currentCrouching,
+                    crouchEntryMirroredDuringRestore))
                 {
                     FireTriggerIfExists(VanillaStartCrouchingTrigger);
                     try { bodyAnimator.Update(0f); } catch { }
@@ -4092,6 +4159,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                             $"frame={Time.frameCount} handle={context.Handle} phase='stop' " +
                             $"stanceMismatch={stanceMismatch} " +
                             $"restoreStateMode='{FormatRestoreStateMode(restoreStateMode)}' " +
+                            $"preStateReplayEntryMirrored={crouchEntryMirroredDuringRestore} " +
                             "action='fire_startCrouching_on_restored_base_layer'.");
                     }
                 }
@@ -5566,6 +5634,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             rigControlPoseSnapshot = null;
             rigControlRoot = null;
             thirdPersonRigControlPoseSnapshot = null;
+            scopedThirdPersonPoseSnapshot = null;
             scopedFirstPersonPoseSnapshot = null;
             ResetCameraDisplacementGuardState();
             context = null;
@@ -5711,6 +5780,49 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             internal static TransformPoseSnapshot CaptureSubtree(Transform root)
             {
                 return Capture(root, includeRoot: true);
+            }
+
+            internal static TransformPoseSnapshot CaptureDescendantsExceptBranch(
+                Transform root,
+                Transform excludedDescendant,
+                out Transform excludedBranch)
+            {
+                excludedBranch = ResolveDirectChildBranch(root, excludedDescendant);
+                if (root == null)
+                    return new TransformPoseSnapshot(Array.Empty<TransformPose>());
+
+                Transform[] transforms = root.GetComponentsInChildren<Transform>(true);
+                var captured = new List<TransformPose>(Math.Max(0, transforms.Length - 1));
+                for (int i = 0; i < transforms.Length; i++)
+                {
+                    Transform transform = transforms[i];
+                    if (transform == null || transform == root)
+                        continue;
+                    if (excludedBranch != null &&
+                        (transform == excludedBranch || transform.IsChildOf(excludedBranch)))
+                    {
+                        continue;
+                    }
+                    captured.Add(new TransformPose(transform));
+                }
+
+                return new TransformPoseSnapshot(captured.ToArray());
+            }
+
+            private static Transform ResolveDirectChildBranch(
+                Transform root,
+                Transform descendant)
+            {
+                if (root == null || descendant == null || descendant == root ||
+                    !descendant.IsChildOf(root))
+                {
+                    return null;
+                }
+
+                Transform current = descendant;
+                while (current.parent != null && current.parent != root)
+                    current = current.parent;
+                return current.parent == root ? current : null;
             }
 
             private static TransformPoseSnapshot Capture(Transform root, bool includeRoot)
