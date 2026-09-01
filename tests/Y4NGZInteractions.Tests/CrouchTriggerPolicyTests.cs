@@ -60,6 +60,41 @@ public sealed class CrouchTriggerPolicyTests
     }
 
     [Fact]
+    public void RestoreEntryNotNeededWhenAssertionIsNotRequired()
+    {
+        Assert.Equal(
+            CrouchRestoreEntryOutcome.NotNeeded,
+            CrouchTriggerPolicy.ResolveRestoreEntryOutcome(
+                shouldAssertRestoreEntry: false,
+                landedInCrouchCluster: true));
+        Assert.Equal(
+            CrouchRestoreEntryOutcome.NotNeeded,
+            CrouchTriggerPolicy.ResolveRestoreEntryOutcome(
+                shouldAssertRestoreEntry: false,
+                landedInCrouchCluster: false));
+    }
+
+    [Fact]
+    public void RestoreEntryPrefersInstantClusterEntryOverTheCrossfadingTrigger()
+    {
+        Assert.Equal(
+            CrouchRestoreEntryOutcome.InstantEntry,
+            CrouchTriggerPolicy.ResolveRestoreEntryOutcome(
+                shouldAssertRestoreEntry: true,
+                landedInCrouchCluster: true));
+    }
+
+    [Fact]
+    public void RestoreEntryFallsBackToTriggerWhenInstantEntryDidNotLand()
+    {
+        Assert.Equal(
+            CrouchRestoreEntryOutcome.TriggerFallback,
+            CrouchTriggerPolicy.ResolveRestoreEntryOutcome(
+                shouldAssertRestoreEntry: true,
+                landedInCrouchCluster: false));
+    }
+
+    [Fact]
     public void RestoreFallbackAssertsLocalCrouchWhenReplayIsUnavailable()
     {
         Assert.True(CrouchTriggerPolicy.ShouldAssertRestoreEntry(

@@ -207,13 +207,23 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         /// parameters drive layer 0 instead of a stale crouch/stand pose. Other layers and the
         /// base-layer weight are restored as usual.
         /// </param>
+        /// <param name="afterControllerAssigned">
+        /// Invoked immediately after the captured controller is re-assigned (and after the
+        /// optional Rebind), BEFORE any parameter rewrite, layer-state replay, or the final
+        /// zero-delta Update. The re-assignment defers Unity's write-defaults capture to the
+        /// next evaluation, so this is the caller's one chance to normalize the pose and burn
+        /// an evaluation in the controller's default (standing) state — otherwise the capture
+        /// bakes whatever stance the outgoing session left on the rig (#37's teardown mirror:
+        /// a crouched drop bakes crouched defaults that vanilla's unkeyed states write back).
+        /// </param>
         public bool Restore(
             Animator animator,
             RuntimeAnimatorController expectedCurrentController,
             bool rebindAnimator,
             AnimatorStateRestoreMode restoreMode,
             Action syncParametersBeforeStateReplay,
-            bool restoreBaseLayerState)
+            bool restoreBaseLayerState,
+            Action afterControllerAssigned = null)
         {
             if (animator == null)
             {
@@ -235,6 +245,12 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 // curve cannot retain a custom interaction pose (tilted wrists/floating arms).
                 if (rebindAnimator)
                     animator.Rebind();
+
+                if (afterControllerAssigned != null)
+                {
+                    try { afterControllerAssigned(); } catch { }
+                }
+
                 animator.speed = Speed;
 
                 for (int i = 0; i < parameters.Length; i++)
