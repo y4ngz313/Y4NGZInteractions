@@ -56,6 +56,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         private static ConfigEntry<bool> enableRestoreSeamFrameLogger;
         private static ConfigEntry<bool> enableRestoreRigStateLogger;
         private static ConfigEntry<bool> enablePristineRigDiffProbe;
+        private static ConfigEntry<bool> forceDiagnosticsForRegressionHunt;
         private static ConfigEntry<bool> restoreRigControlPose;
         private static ConfigEntry<bool> restorePristineRigControlPose;
         private static ConfigEntry<bool> restoreThirdPersonRigControlPose;
@@ -163,7 +164,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             initialized && ReadEnabled(enableExternalCameraPresentationLogger, false);
 
         internal static bool RestoreSeamFrameLoggerEnabled =>
-            initialized && ReadEnabled(enableRestoreSeamFrameLogger, false);
+            initialized && ReadRegressionHuntDiagnostic(enableRestoreSeamFrameLogger);
 
         internal static bool RestoreRigControlPoseEnabled =>
             initialized && ReadEnabled(restoreRigControlPose, true);
@@ -230,7 +231,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     ConfigSection,
                     "Enable Restore Seam Frame Logger",
                     false,
-                    "Samples local-player state around each live-body Stop and samples final rendered transforms, visibility, camera parameters, and timing around both Start and Stop seams.");
+                    "Samples local-player state around each live-body Stop and samples final rendered transforms, visibility, camera parameters, and timing around both Start and Stop seams. Also arms the mid-session and post-session viewpoint samplers.");
                 enableRestoreRigStateLogger = config.Bind(
                     ConfigSection,
                     "Enable Restore Rig State Logger",
@@ -241,6 +242,11 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     "Enable Pristine Rig Diff Probe",
                     false,
                     "Captures the local first-person RigArms controls before any API live-body animation and enables automatic post-restore diffs.");
+                forceDiagnosticsForRegressionHunt = config.Bind(
+                    ConfigSection,
+                    "Force Diagnostics For Regression Hunt",
+                    false,
+                    "Regression-hunt switch. When enabled, the restore seam frame logger, the restore rig state logger, and the pristine rig diff probe run even when an existing profile pins their keys to false. Leave false to honour the individual keys.");
                 restoreRigControlPose = config.Bind(
                     ConfigSection,
                     "Restore Rig Control Pose",
@@ -300,7 +306,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     ConfigSection,
                     "Heal Camera Drift At Session Start",
                     true,
-                    "When enabled, each local live-body session start measures the gameplay camera against its vanilla player-local rest position (0, 2.35, 0.01) and, when it deviates by more than the heal threshold (2 cm) but less than the displacement-guard threshold, restores the camera chain local positions to the authored defaults before capturing the session baseline. This repairs viewpoint drift accumulated by earlier sessions or other mods instead of adopting the contaminated pose as the restore target. This is a new key so existing profiles receive the default-on fix.");
+                    "When enabled, each local live-body session start measures the gameplay camera against its vanilla player-local rest position (0, 2.351, -0.3545) and, when it deviates by more than the heal threshold (2 cm) but less than the displacement-guard threshold, restores the camera chain local positions to the authored defaults before capturing the session baseline. This repairs viewpoint drift accumulated by earlier sessions or other mods instead of adopting the contaminated pose as the restore target. This is a new key so existing profiles receive the default-on fix.");
                 restoreVisorPose = config.Bind(
                     ConfigSection,
                     "Restore Visor Pose",
@@ -335,9 +341,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                         new AcceptableValueList<string>("fresh", "crossfade", "replay")));
             }
 
-            bool frameLoggerEnabled = ReadEnabled(enableRestoreSeamFrameLogger, false);
-            bool rigStateLoggerEnabled = ReadEnabled(enableRestoreRigStateLogger, false);
-            bool rigDiffEnabled = ReadEnabled(enablePristineRigDiffProbe, false);
+            bool forceDiagnostics = ForceDiagnosticsForRegressionHunt;
+            bool frameLoggerBound = ReadEnabled(enableRestoreSeamFrameLogger, false);
+            bool rigStateLoggerBound = ReadEnabled(enableRestoreRigStateLogger, false);
+            bool rigDiffBound = ReadEnabled(enablePristineRigDiffProbe, false);
+            bool frameLoggerEnabled = frameLoggerBound || forceDiagnostics;
+            bool rigStateLoggerEnabled = rigStateLoggerBound || forceDiagnostics;
+            bool rigDiffEnabled = rigDiffBound || forceDiagnostics;
             bool rigControlPoseEnabled = ReadEnabled(restoreRigControlPose, true);
             bool pristineRigControlPoseEnabled =
                 ReadEnabled(restorePristineRigControlPose, true);
@@ -420,6 +430,19 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     $"remoteRigDiffProbe={remoteRigDiffProbeEnabled} " +
                     $"ikBakeProbe={ikBakeProbeEnabled}.");
             }
+
+            if (forceDiagnostics &&
+                (!frameLoggerBound || !rigStateLoggerBound || !rigDiffBound))
+            {
+                logger?.LogInfo(
+                    "[RestoreSeam] diagnostics_forced: " +
+                    $"forceDiagnosticsForRegressionHunt={forceDiagnostics} " +
+                    $"frameLoggerConfigured={frameLoggerBound} " +
+                    $"rigStateLoggerConfigured={rigStateLoggerBound} " +
+                    $"rigDiffConfigured={rigDiffBound} " +
+                    "reason='profile_pins_pre_release_diagnostics_off' " +
+                    "action='override_to_enabled_for_regression_hunt'.");
+            }
         }
 
         internal static void Shutdown()
@@ -463,6 +486,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             enableRestoreSeamFrameLogger = null;
             enableRestoreRigStateLogger = null;
             enablePristineRigDiffProbe = null;
+            forceDiagnosticsForRegressionHunt = null;
             restoreRigControlPose = null;
             restorePristineRigControlPose = null;
             restoreThirdPersonRigControlPose = null;
@@ -486,7 +510,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
         internal static void BeginCoordinatorLateUpdateTick()
         {
-            if (!initialized || !ReadEnabled(enableRestoreSeamFrameLogger, false))
+            if (!initialized || !ReadRegressionHuntDiagnostic(enableRestoreSeamFrameLogger))
                 return;
 
             coordinatorLateUpdateTick = true;
@@ -838,7 +862,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
             NotifyRemoteRigProbeRestoreCompleted(player);
             ScheduleIkBakeProbeAfterRestore(player);
-            if (!ReadEnabled(enablePristineRigDiffProbe, false) ||
+            if (!ReadRegressionHuntDiagnostic(enablePristineRigDiffProbe) ||
                 pristineRig == null || !ReferenceEquals(pristineRig.Player, player))
             {
                 return;
@@ -1450,7 +1474,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
         internal static void LogRigAnimatorStates(Animator animator, string checkpoint)
         {
-            if (!initialized || !ReadEnabled(enableRestoreRigStateLogger, false))
+            if (!initialized || !ReadRegressionHuntDiagnostic(enableRestoreRigStateLogger))
                 return;
 
             try
@@ -1502,7 +1526,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 return;
 
             bool frameLoggerEnabled = ReadEnabled(enableRestoreSeamFrameLogger, false);
-            bool rigDiffEnabled = ReadEnabled(enablePristineRigDiffProbe, false);
+            bool rigDiffEnabled = ReadRegressionHuntDiagnostic(enablePristineRigDiffProbe);
             bool pristineRigCaptureEnabled = PristineRigCaptureEnabled();
             bool remoteRigDiffProbeEnabled =
                 ReadEnabled(enableRemoteRigDiffProbe, false);
@@ -2181,6 +2205,35 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         }
 
         /// <summary>
+        /// Reads one transform's pristine (authored or runtime-settled) LOCAL position from the
+        /// camera-chain baseline. Used by the stop seam to assert that the gameplay camera's own
+        /// local position is still the vanilla invariant: it is a child of the camera container,
+        /// so any offset written here is never derived away by vanilla and persists for the rest
+        /// of the game.
+        /// </summary>
+        internal static bool TryGetPristineCameraChainLocalPosition(
+            PlayerControllerB player,
+            string targetName,
+            out Vector3 localPosition,
+            out string source)
+        {
+            localPosition = Vector3.zero;
+            source = CameraChainAuthoredDefaultSource;
+            if (player == null)
+                return false;
+
+            if (!PristineCameraChainPoses.TryGetValue(
+                    player,
+                    out CameraChainPoseSnapshot pristine) || pristine == null)
+            {
+                return false;
+            }
+
+            source = pristine.Source;
+            return pristine.TryGetLocalPosition(targetName, out localPosition);
+        }
+
+        /// <summary>
         /// One-time upgrade of a player's camera-chain rest baseline from the authored prefab
         /// pose to the current runtime-settled pose. The caller is responsible for verifying the
         /// chain is actually at rest (camera near vanilla rest expectation, player idle,
@@ -2345,6 +2398,21 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 capturedTransforms.Add(target);
                 capturedPositions.Add(target.localPosition);
                 capturedNames.Add(name);
+            }
+
+            internal bool TryGetLocalPosition(string name, out Vector3 localPosition)
+            {
+                for (int i = 0; i < names.Length; i++)
+                {
+                    if (!string.Equals(names[i], name, StringComparison.Ordinal))
+                        continue;
+
+                    localPosition = localPositions[i];
+                    return true;
+                }
+
+                localPosition = Vector3.zero;
+                return false;
             }
 
             internal int RestorePositions()
@@ -2878,9 +2946,23 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             }
         }
 
+        /// <summary>
+        /// Regression-hunt override. The three seam diagnostics ship dormant (default off);
+        /// this companion force key (also default off) turns them all on at once for a hunt,
+        /// even when an existing profile pins their individual keys to false — BepInEx keeps a
+        /// persisted value over a changed default, so a single switch beats editing three keys.
+        /// </summary>
+        private static bool ForceDiagnosticsForRegressionHunt =>
+            ReadEnabled(forceDiagnosticsForRegressionHunt, false);
+
+        private static bool ReadRegressionHuntDiagnostic(ConfigEntry<bool> entry)
+        {
+            return ReadEnabled(entry, false) || ForceDiagnosticsForRegressionHunt;
+        }
+
         private static bool PristineRigCaptureEnabled()
         {
-            return ReadEnabled(enablePristineRigDiffProbe, false) ||
+            return ReadRegressionHuntDiagnostic(enablePristineRigDiffProbe) ||
                    ReadEnabled(restorePristineRigControlPose, true);
         }
 

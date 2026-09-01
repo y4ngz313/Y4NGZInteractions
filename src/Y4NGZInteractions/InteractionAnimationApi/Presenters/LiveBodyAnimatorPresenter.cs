@@ -22,10 +22,15 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private const float CameraDisplacementGuardThreshold = 1.25f;
         private const float CameraRotationResidueThresholdDegrees = 0.02f;
         private const float CameraDriftHealThresholdMeters = 0.02f;
+        private const float CameraHorizontalRestToleranceMeters = 0.15f;
         // Vanilla crouched viewpoint: player-local camera Y ~1.17 versus the standing rest
-        // height carried in VanillaCameraPlayerLocalRestExpectation.y (2.35).
+        // height carried in VanillaCameraPlayerLocalRestExpectation.y (2.351).
         private const float VanillaCameraCrouchedPlayerLocalRestHeight = 1.17f;
         private const float StanceViewpointHeightToleranceMeters = 0.15f;
+        // Residue tolerance for the gameplay camera's own local position. It is a CHILD of the
+        // camera container and vanilla never rewrites its local position, so anything this
+        // controller leaves there is permanent. 1 mm is well inside float noise on the chain.
+        private const float CameraChainLocalResidueToleranceMeters = 0.001f;
         private const double PlaybackRateSampleIntervalSeconds = 1d;
         private const double PlaybackRateMinimumSampleSeconds = 0.05d;
         // Vanilla glides the camera between the stand and crouch heights over roughly a
@@ -53,10 +58,69 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private const string VanillaCrouchingBool = "crouching";
         private const string CameraDisplacementGuardBaselineSource =
             "try_start_pre_controller";
+        // Vanilla standing rest, measured in the PLAYER-LOCAL frame every guard reading uses
+        // (player.transform.InverseTransformPoint(gameplayCamera.position)). The old Z (0.01) was
+        // derived without the -0.368 CameraContainer hierarchy offset, so every displacement
+        // reading it fed was inflated by ~0.365 m — one healthy session cleared the 1.25 m
+        // threshold by 0.001. The true standing rest in this frame is (0, 2.351, -0.3545).
         private static readonly Vector3 VanillaCameraPlayerLocalRestExpectation =
-            new Vector3(0f, 2.35f, 0.01f);
+            new Vector3(0f, 2.351f, -0.3545f);
         private static readonly Vector3 VanillaCameraContainerLocalRestEuler =
             new Vector3(90f, 359.8182f, 0f);
+
+        // The arms metarig's standing rest is NOT a constant here: the authored parent-local
+        // height is 2.103999 (Idle1/CrouchDown t=0 key it; the prefab default matches), and the
+        // 2.3599 rounds 5-7 measured was the same pose read PLAYER-locally through the 1.1216
+        // parent scale. The metarig stance enforcement reads the parent-local rest from the
+        // per-player pristine camera-chain baseline instead of hardcoding either number.
+
+        // Base Layer state hashes on the swapped (faithful vanilla copy) controller. The crouch
+        // cluster is the set the "crouching" Bool can exit but only the "startCrouching" trigger
+        // can enter, so the resync policy needs to recognise it by hash every tick.
+        private static readonly int VanillaCrouchDownStateHash =
+            Animator.StringToHash("CrouchDown");
+        private static readonly int VanillaCrouchIdleStateHash =
+            Animator.StringToHash("CrouchIdle");
+        private static readonly int VanillaCrouchWalkStateHash =
+            Animator.StringToHash("CrouchWalk");
+
+        // Pre-hashed so the base-layer state-change log can name the state that ejected the
+        // session from the crouch cluster instead of printing a bare hash.
+        private static readonly Dictionary<int, string> VanillaBaseLayerStateNames =
+            BuildVanillaBaseLayerStateNames();
+
+        private static Dictionary<int, string> BuildVanillaBaseLayerStateNames()
+        {
+            // All 15 Base Layer states read from the vanilla metarig.controller asset (the
+            // swapped shell's base layer is a byte-identical copy). "WalkSideways" is the state
+            // earlier rounds logged as the bare hash 951932154 and misread as an item-grab
+            // state. "Jumping"/"ShortFallLanding" are trigger PARAMETERS, not states, but stay
+            // mapped in case a third-party controller uses them as state names.
+            string[] names =
+            {
+                "Idle1",
+                "Walk",
+                "Walk 0",
+                "WalkSideways",
+                "WalkHindered",
+                "LimpWalk",
+                "Sprint",
+                "CrouchDown",
+                "CrouchIdle",
+                "CrouchWalk",
+                "Jump",
+                "Jumping",
+                "FallNoJump",
+                "JumpLand",
+                "ShortFallLanding",
+                "ClimbLadder",
+                "PushLever"
+            };
+            Dictionary<int, string> map = new Dictionary<int, string>(names.Length);
+            foreach (string name in names)
+                map[Animator.StringToHash(name)] = name;
+            return map;
+        }
 
         // Keep animation bundles resident after their first use. Re-loading and decompressing
         // the gun controller + clip pack synchronously in EquipItem measured 378-398 ms in the
@@ -86,6 +150,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private int fullBodyLayerIndex = -1;
         private int firstPersonLayerIndex = -1;
         private float elapsedSeconds;
+        private MidSessionSampleTargets midSessionTargets;
+        private float nextMidSessionSampleAtSeconds;
         private float nextDiagnosticsAtSeconds;
         private float nextTransformChainDiagnosticsAtSeconds;
         private int lastTransformChainDiagnosticsFrame = -1;
@@ -112,6 +178,10 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private float exitStartFullBodyWeight;
         private float exitStartFirstPersonWeight;
         private int lastMovementValue = -1;
+        private CrouchStateResyncDebounce crouchStateResyncDebounce;
+        private int lastBaseLayerStateHash;
+        private bool hasLastBaseLayerStateHash;
+        private int crouchStateResyncCount;
         private bool playbackRateHasBaseline;
         private int playbackRateLayerIndex = -1;
         private int playbackRateFullPathHash;
@@ -160,6 +230,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private bool remoteLocomotionWalking;
         private bool remoteLocomotionSprinting;
         private LocalCameraPositionStabilizer cameraPositionStabilizer;
+        // Survive the context teardown so the pin's deferred release can still log its tripwire.
+        private BepInEx.Logging.ManualLogSource pinReleaseLogger;
+        private string pinReleaseHandle;
         private LocalCameraRotationStabilizer cameraRotationStabilizer;
         private bool specialAnimationAutoStopExemptLogged;
         private InteractionAnimationStopReason? requestedStopReason;
@@ -350,6 +423,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             this.context = context;
             bodyAnimator = context.Request.Player.playerBodyAnimator;
+            // A new session supersedes any empty-hands watch still running from the last Stop.
+            DisarmPostSessionWatcher();
             // This must be the first session-state capture: the guard reference represents the
             // camera before diagnostics, bundle work, or the authored controller can touch it.
             CaptureLocalCameraBaseline();
@@ -471,6 +546,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 $"stopOnGameplayCameraDisplacement={body.stopOnGameplayCameraDisplacement} " +
                 $"stabilizeLocalCameraPosition={body.stabilizeLocalCameraPosition} " +
                 $"localCameraOwnedExternally={body.localCameraOwnedExternally}.");
+            // Session-start sample: the first mid-session frame, after every setup step above.
+            StartMidSessionSampler();
+            LogMidSessionSample("session_start");
             return true;
         }
 
@@ -514,10 +592,15 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             // Parameters are the only path left, so a third-person session must drive them
             // itself or the swapped controller's locomotion never leaves idle.
             SyncVanillaLocomotionParameters("tick");
+            // Parameters alone cannot get back into the crouch cluster: "crouching" only gates
+            // the exits. Watch the Base Layer's actual state and re-fire "startCrouching" when
+            // an AnyState edge has ejected a crouched session into the standing cluster.
+            EvaluateBaseLayerStanceSync();
             DriveMovementParameter();
             SamplePlaybackRateProgression();
             DetectAutoStopConditions();
             LogFrameDiagnostics();
+            LogPeriodicMidSessionSample();
         }
 
         // Live-body sessions yield to death, ladders, and foreign special animations. Configured
@@ -1244,10 +1327,19 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     player.transform,
                     player.gameplayCamera.transform,
                     stopEntryPlayerLocalPosition);
+                // The pin outlives teardown by two LateUpdates, during which vanilla re-authors the
+                // container from its locomotion clips. Holding the pose with a world-space write on
+                // the camera therefore baked (pinTarget - containerPose) into
+                // gameplayCamera.localPosition after the teardown tripwire had already passed:
+                // a crouched drop pinned ~1.17 against a ~2.35 standing container and left a
+                // permanent -1.18 camera-local offset. Hold the container instead.
+                cameraPositionStabilizer.HoldAtContainerLevel(
+                    SafeCameraContainerTransform(player));
                 context?.Logger?.LogInfo(
                     "[RestoreSeam.pin] pin_started: " +
                     $"frame={Time.frameCount} handle={context.Handle} " +
-                    $"playerLocalPosition={stopEntryPlayerLocalPosition}.");
+                    $"playerLocalPosition={stopEntryPlayerLocalPosition} " +
+                    $"holdTarget='{(cameraPositionStabilizer.HoldsAtContainerLevel ? "camera_container" : "unavailable_no_container")}'.");
             }
             catch (Exception exception)
             {
@@ -1266,19 +1358,59 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             if (stabilizer == null)
                 return;
 
+            GameNetcodeStuff.PlayerControllerB player = context?.Request?.Player;
+            // Stop() clears the context before the deferred release runs, so the seam logger and
+            // handle have to be captured here or the post-release tripwire would log nothing.
+            pinReleaseLogger = context?.Logger;
+            pinReleaseHandle = context != null ? context.Handle.ToString() : null;
             try
             {
                 if (restorePosition)
                     stabilizer.ApplyNow();
                 if (deferRelease)
-                    stabilizer.ReleaseAfterLateUpdates(2);
+                {
+                    // The deferred window is the one stretch of teardown the residue tripwire did
+                    // not cover: it runs inside the camera-chain snap, while these LateUpdates
+                    // happen after Stop returns. Close the loop at the pin's final release.
+                    stabilizer.SetReleaseCallback(
+                        () => CompleteCameraPinRelease(player, "deferred"));
+                    stabilizer.ReleaseAfterLateUpdates(
+                        CameraPinReleasePolicy.DeferredReleaseLateUpdates);
+                }
                 else
                 {
                     stabilizer.enabled = false;
                     UnityEngine.Object.Destroy(stabilizer);
+                    CompleteCameraPinRelease(player, "immediate");
                 }
             }
             catch { }
+        }
+
+        /// <summary>
+        /// Final stand-down of the restore-scoped camera pin. Whatever the pin wrote, the gameplay
+        /// camera's own local position must end the teardown pristine, so it is restored here and
+        /// the teardown tripwire is re-run over the deferred window that previously escaped it.
+        /// </summary>
+        private void CompleteCameraPinRelease(
+            GameNetcodeStuff.PlayerControllerB player,
+            string mode)
+        {
+            try
+            {
+                string cameraLocalRestore = RestorePristineGameplayCameraLocalPosition(player);
+                SeamLogger?.LogInfo(
+                    "[RestoreSeam.pin] pin_released: " +
+                    $"frame={Time.frameCount} handle={SeamHandle} " +
+                    $"mode='{mode}' cameraLocalRestore='{cameraLocalRestore}'.");
+                LogCameraChainTeardownResidueCheck(player, "post_pin_release");
+            }
+            catch { }
+            finally
+            {
+                pinReleaseLogger = null;
+                pinReleaseHandle = null;
+            }
         }
 
         private CameraRotationSnapshot CaptureSeamCameraRotation(string phase)
@@ -2144,18 +2276,47 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             }
 
             // Crouch<->stand transitions move the camera well beyond the try_start baseline
-            // (crouched baseline ~1.17 vs standing rest 2.35) while staying inside the
+            // (crouched baseline ~1.17 vs standing rest 2.351) while staying inside the
             // vanilla-rest envelope. Genuine displacement — teleport, turret grab — exceeds
             // the threshold from both the baseline AND vanilla rest, so a camera still within
             // the envelope is never authored damage worth killing the session over.
-            if (currentDisplacementFromVanillaRest <= CameraDisplacementGuardThreshold)
+            //
+            // The envelope is magnitude-only and instantaneous: it measures against BOTH stance
+            // rests and never stops for a stance mismatch on its own. A mismatch is true at t=0
+            // of every legitimate crouch/stand transition, so stopping there killed legitimate
+            // transitions and produced stop/snap/restart churn with the consumer's self-heal.
+            // Stance damage is owned solely by EvaluateStanceViewpointInvariant above, which
+            // requires the mismatch to persist past vanilla's crouch-glide window.
+            bool guardCrouchingKnown = TryReadCrouching(player, out bool guardCrouching);
+            CameraRestEnvelopeDecision envelope = CameraRestEnvelopePolicy.Evaluate(
+                current.x,
+                current.y,
+                current.z,
+                VanillaCameraPlayerLocalRestExpectation.x,
+                VanillaCameraPlayerLocalRestExpectation.z,
+                VanillaCameraPlayerLocalRestExpectation.y,
+                VanillaCameraCrouchedPlayerLocalRestHeight,
+                guardCrouchingKnown,
+                guardCrouching,
+                CameraDisplacementGuardThreshold,
+                StanceViewpointHeightToleranceMeters);
+            string envelopeMeasurements =
+                $"crouching={guardCrouching} crouchingKnown={guardCrouchingKnown} " +
+                $"stance_rest_height={envelope.StanceRestHeight:0.###} " +
+                $"distance_from_stance_rest={envelope.DistanceFromStanceRest:0.###} " +
+                $"distance_from_opposite_stance_rest=" +
+                $"{envelope.DistanceFromOppositeStanceRest:0.###} " +
+                $"stance_height_deviation={envelope.HeightDeviationFromStanceRest:0.###} " +
+                $"envelope_basis='{envelope.Basis}'";
+            if (envelope.Whitelisted)
             {
                 if (!cameraGuardVanillaRestEnvelopeSuppressionLogged)
                 {
                     cameraGuardVanillaRestEnvelopeSuppressionLogged = true;
                     context?.Logger?.LogInfo(
                         "[LCInteractionAnimationAPI] live_body.camera_displacement_guard.continue: " +
-                        BuildMeasurements() + " action='continue_within_vanilla_rest_envelope'.");
+                        BuildMeasurements() + " " + envelopeMeasurements +
+                        " action='continue_within_stance_rest_envelope'.");
                 }
                 return;
             }
@@ -2164,13 +2325,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             cameraGuardRequestedStop = true;
             context?.Logger?.LogError(
                 "[LCInteractionAnimationAPI] live_body.camera_displacement_guard.stop: " +
-                BuildMeasurements() + " action='stop_genuinely_new_displacement'.");
+                BuildMeasurements() + " " + envelopeMeasurements +
+                " action='stop_genuinely_new_displacement'.");
         }
 
         /// <summary>
         /// Stance-aware half of the camera displacement guard: compares the camera's
         /// player-local height against the expected height for the player's CURRENT stance
-        /// (standing rest 2.35 vs crouched rest ~1.17). A mismatch sustained past the vanilla
+        /// (standing rest 2.351 vs crouched rest ~1.17). A mismatch sustained past the vanilla
         /// crouch-glide window trips the same auto-stop recovery path as the magnitude guard.
         /// Returns true when it requested the stop (caller should bail out).
         /// </summary>
@@ -2548,32 +2710,397 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         /// across sessions. Positions only — rotation is owned by ReapplySeamCameraRotation.
         /// </summary>
         /// <summary>
-        /// Forces the gameplay camera's player-local height onto the rest height of the stance
-        /// the player is actually in. Used only on a displacement-guard stop, where the current
-        /// height is by definition one the guard rejected.
+        /// Moves the gameplay camera's player-local height onto the rest height of the stance
+        /// the player is actually in, by repositioning the CAMERA CONTAINER — never the gameplay
+        /// camera itself.
+        ///
+        /// The gameplay camera is a child of <c>cameraContainerTransform</c>, and the pristine
+        /// capture proves its vanilla invariant local position is (0,0,0). Writing the camera's
+        /// world position therefore baked a permanent offset into its local position (-1.19 m
+        /// after a crouched stop) that nothing ever cleared: the session-start heal skips while
+        /// crouched, and consumers' janitors are rotation-only. Baked offset plus the vanilla
+        /// CrouchDown container pose put the viewpoint below the floor. Vanilla rewrites the
+        /// container's local position every frame, so a container-level correction is transient
+        /// and self-healing; a camera-level one is forever.
         /// </summary>
         private void ApplyStanceRestHeightSnap(
             GameNetcodeStuff.PlayerControllerB player,
             bool crouching,
             InteractionAnimationStopReason stopReason,
-            string phase)
+            string phase,
+            string reason)
         {
             if (player == null || player.gameplayCamera == null || player.transform == null)
                 return;
 
-            Vector3 before = player.transform.InverseTransformPoint(
-                player.gameplayCamera.transform.position);
+            Transform cameraTransform = player.gameplayCamera.transform;
+            Vector3 before = player.transform.InverseTransformPoint(cameraTransform.position);
             float stanceRestHeight = StanceRestHeight(crouching);
-            player.gameplayCamera.transform.position = player.transform.TransformPoint(
-                new Vector3(before.x, stanceRestHeight, before.z));
+            CameraHorizontalRestoreTarget horizontalTarget =
+                CameraStanceRestorePolicy.ResolveHorizontalTarget(
+                    currentX: before.x,
+                    currentZ: before.z,
+                    sessionEntryX: cameraPlayerLocalPositionAtStart.x,
+                    sessionEntryZ: cameraPlayerLocalPositionAtStart.z,
+                    hasSessionEntry: hasCameraPlayerLocalBaseline,
+                    vanillaRestX: VanillaCameraPlayerLocalRestExpectation.x,
+                    vanillaRestZ: VanillaCameraPlayerLocalRestExpectation.z,
+                    horizontalTolerance: CameraHorizontalRestToleranceMeters);
+            Vector3 target = new Vector3(
+                horizontalTarget.X,
+                stanceRestHeight,
+                horizontalTarget.Z);
+
+            // Step 1: the camera's own local position goes back to pristine before anything is
+            // measured, so the container correction below is computed against a clean chain.
+            string cameraLocalRestore = RestorePristineGameplayCameraLocalPosition(player);
+
+            // Step 2: apply the correction on the container, which is what vanilla clips author
+            // and what vanilla re-derives every frame.
+            Transform container = SafeCameraContainerTransform(player);
+            string correctionTarget;
+            if (container != null && !ReferenceEquals(container, cameraTransform) &&
+                cameraTransform.IsChildOf(container))
+            {
+                Vector3 desiredWorld = player.transform.TransformPoint(target);
+                container.position += desiredWorld - cameraTransform.position;
+                correctionTarget = "camera_container";
+            }
+            else
+            {
+                // No usable container: leaving the chain alone is strictly better than writing
+                // the camera's world position, which is the residue-baking defect itself.
+                correctionTarget = "unavailable_no_container";
+            }
+
+            Vector3 after = player.transform.InverseTransformPoint(cameraTransform.position);
+            string horizontalSource = horizontalTarget.UsedSessionEntry
+                ? "session_entry"
+                : "vanilla_rest_fallback";
             context?.Logger?.LogInfo(
                 "[RestoreSeam.camerachain] stance_rest_snap_applied: " +
                 $"frame={Time.frameCount} " +
                 $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
                 $"phase='{phase}' stopReason='{stopReason}' crouching={crouching} " +
                 $"beforePlayerLocal={DescribeVector(before)} " +
+                $"targetPlayerLocal={DescribeVector(target)} " +
+                $"afterPlayerLocal={DescribeVector(after)} " +
+                $"sessionEntryPlayerLocal={DescribeVector(cameraPlayerLocalPositionAtStart)} " +
+                $"hasSessionEntry={hasCameraPlayerLocalBaseline} " +
+                $"horizontalSource='{horizontalSource}' " +
                 $"stanceRestHeight={stanceRestHeight:0.###} " +
-                "reason='displacement_guard_stop' action='snap_to_stance_rest_height'.");
+                $"correctionTarget='{correctionTarget}' " +
+                $"cameraLocalRestore='{cameraLocalRestore}' " +
+                $"reason='{reason}' action='snap_to_stance_rest_pose'.");
+        }
+
+        private static Animator SafePlayerBodyAnimator(
+            GameNetcodeStuff.PlayerControllerB player)
+        {
+            try { return player != null ? player.playerBodyAnimator : null; }
+            catch { return null; }
+        }
+
+        private static Transform SafeCameraContainerTransform(
+            GameNetcodeStuff.PlayerControllerB player)
+        {
+            try { return player != null ? player.cameraContainerTransform : null; }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// Seam logging outlives the session context: the camera pin's deferred release runs two
+        /// LateUpdates after <c>Stop</c> has already cleared <c>context</c>.
+        /// </summary>
+        private BepInEx.Logging.ManualLogSource SeamLogger => context?.Logger ?? pinReleaseLogger;
+
+        private string SeamHandle =>
+            context != null ? context.Handle.ToString() : (pinReleaseHandle ?? "<none>");
+
+        /// <summary>
+        /// Puts <c>gameplayCamera.localPosition</c> back on its pristine value when it has
+        /// drifted. Returns a short outcome token for the caller's log line.
+        /// </summary>
+        private string RestorePristineGameplayCameraLocalPosition(
+            GameNetcodeStuff.PlayerControllerB player)
+        {
+            if (player == null || player.gameplayCamera == null)
+                return "camera_missing";
+
+            if (!InteractionAnimationApiRestoreDiagnostics
+                    .TryGetPristineCameraChainLocalPosition(
+                        player,
+                        "gameplayCamera",
+                        out Vector3 pristineLocal,
+                        out string source))
+            {
+                return "pristine_unavailable";
+            }
+
+            Transform cameraTransform = player.gameplayCamera.transform;
+            Vector3 current = cameraTransform.localPosition;
+            Vector3 delta = current - pristineLocal;
+            if (!CameraStanceRestorePolicy.ExceedsResidueTolerance(
+                    delta.x,
+                    delta.y,
+                    delta.z,
+                    CameraChainLocalResidueToleranceMeters))
+            {
+                return "already_pristine";
+            }
+
+            cameraTransform.localPosition = pristineLocal;
+            SeamLogger?.LogWarning(
+                "[RestoreSeam.camerachain] camera_local_residue_cleared: " +
+                $"frame={Time.frameCount} handle={SeamHandle} " +
+                $"beforeLocal={DescribeVector(current)} " +
+                $"pristineLocal={DescribeVector(pristineLocal)} " +
+                $"source='{source}' action='restore_pristine_camera_local_position'.");
+            return "restored";
+        }
+
+        /// <summary>
+        /// End-of-teardown tripwire. Originally it only measured
+        /// <c>gameplayCamera.localPosition</c> — which no code path in this presenter can ever
+        /// write, so the check was structurally always 'pristine' and proved nothing. The arms
+        /// chain is where authored clips DO leave residue, so localArmsTransform and
+        /// playerModelArmsMetarig are now measured against the same pristine capture at the same
+        /// 1 mm tolerance. The camera fields are kept verbatim for log continuity.
+        /// </summary>
+        private void LogCameraChainTeardownResidueCheck(
+            GameNetcodeStuff.PlayerControllerB player,
+            string phase)
+        {
+            try
+            {
+                if (player == null || player.gameplayCamera == null)
+                    return;
+
+                if (!InteractionAnimationApiRestoreDiagnostics
+                        .TryGetPristineCameraChainLocalPosition(
+                            player,
+                            "gameplayCamera",
+                            out Vector3 pristineLocal,
+                            out string source))
+                {
+                    return;
+                }
+
+                Vector3 current = player.gameplayCamera.transform.localPosition;
+                Vector3 delta = current - pristineLocal;
+                bool residue = CameraStanceRestorePolicy.ExceedsResidueTolerance(
+                    delta.x,
+                    delta.y,
+                    delta.z,
+                    CameraChainLocalResidueToleranceMeters);
+                string localArmsMeasurements = DescribeChainTargetResidue(
+                    player,
+                    "localArmsTransform",
+                    "localArms",
+                    SafeLocalArmsTransform(player),
+                    out bool localArmsResidue);
+                string armsMetarigMeasurements = DescribeChainTargetResidue(
+                    player,
+                    "playerModelArmsMetarig",
+                    "armsMetarig",
+                    SafeArmsMetarigTransform(player),
+                    out bool armsMetarigResidue);
+                residue = residue || localArmsResidue || armsMetarigResidue;
+                string measurements =
+                    $"frame={Time.frameCount} handle={SeamHandle} " +
+                    $"phase='{phase}' " +
+                    $"gameplayCameraLocal={DescribeVector(current)} " +
+                    $"pristineLocal={DescribeVector(pristineLocal)} " +
+                    $"residue={DescribeVector(delta)} " +
+                    $"tolerance={CameraChainLocalResidueToleranceMeters:0.####} " +
+                    $"source='{source}' " +
+                    localArmsMeasurements + " " + armsMetarigMeasurements;
+                if (residue)
+                {
+                    SeamLogger?.LogWarning(
+                        "[RestoreSeam.camerachain] teardown_residue_check: " +
+                        measurements + " result='residue_left' action='investigate'.");
+                    return;
+                }
+
+                SeamLogger?.LogInfo(
+                    "[RestoreSeam.camerachain] teardown_residue_check: " +
+                    measurements + " result='pristine' action='none'.");
+            }
+            catch (Exception exception)
+            {
+                SeamLogger?.LogInfo(
+                    "[RestoreSeam.camerachain] teardown_residue_check: " +
+                    $"frame={Time.frameCount} phase='{phase}' " +
+                    $"error='{exception.Message}' result='unavailable' action='none'.");
+            }
+        }
+
+        /// <summary>
+        /// One camera-chain target's local-position residue, formatted for the teardown tripwire.
+        /// <paramref name="targetName"/> is the key inside the pristine
+        /// <c>CameraChainPoseSnapshot</c>; <paramref name="label"/> prefixes the log fields.
+        /// </summary>
+        private string DescribeChainTargetResidue(
+            GameNetcodeStuff.PlayerControllerB player,
+            string targetName,
+            string label,
+            Transform target,
+            out bool residue)
+        {
+            residue = false;
+            if (target == null)
+                return $"{label}Local=<unresolved> {label}Residue=<unresolved>";
+
+            if (!InteractionAnimationApiRestoreDiagnostics
+                    .TryGetPristineCameraChainLocalPosition(
+                        player,
+                        targetName,
+                        out Vector3 pristineLocal,
+                        out string source))
+            {
+                return $"{label}Local={DescribeVector(target.localPosition)} " +
+                    $"{label}Residue=<pristine_unavailable>";
+            }
+
+            Vector3 current = target.localPosition;
+            Vector3 delta = current - pristineLocal;
+            residue = CameraStanceRestorePolicy.ExceedsResidueTolerance(
+                delta.x,
+                delta.y,
+                delta.z,
+                CameraChainLocalResidueToleranceMeters);
+            return $"{label}Local={DescribeVector(current)} " +
+                $"{label}PristineLocal={DescribeVector(pristineLocal)} " +
+                $"{label}Residue={DescribeVector(delta)} " +
+                $"{label}ResidueDetected={residue} " +
+                $"{label}Source='{source}'";
+        }
+
+        private static Transform SafeLocalArmsTransform(
+            GameNetcodeStuff.PlayerControllerB player)
+        {
+            try { return player != null ? player.localArmsTransform : null; }
+            catch { return null; }
+        }
+
+        private static Transform SafeArmsMetarigTransform(
+            GameNetcodeStuff.PlayerControllerB player)
+        {
+            try { return player != null ? player.playerModelArmsMetarig : null; }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// #37: puts the arms chain back on its pristine local positions immediately before the
+        /// controller swap, so the rebind captures canonical rest-pose write-defaults instead of
+        /// the player's current stance. See <see cref="ControllerSwapBindPosePolicy"/>.
+        /// </summary>
+        private void NormalizeBindPoseBeforeControllerSwap()
+        {
+            GameNetcodeStuff.PlayerControllerB player = context?.Request?.Player;
+            if (player == null)
+                return;
+            NormalizeBindPoseTarget(player, "localArmsTransform", SafeLocalArmsTransform(player));
+            NormalizeBindPoseTarget(
+                player, "playerModelArmsMetarig", SafeArmsMetarigTransform(player));
+        }
+
+        private void NormalizeBindPoseTarget(
+            GameNetcodeStuff.PlayerControllerB player,
+            string targetName,
+            Transform target)
+        {
+            try
+            {
+                if (target == null)
+                    return;
+
+                bool pristineAvailable = InteractionAnimationApiRestoreDiagnostics
+                    .TryGetPristineCameraChainLocalPosition(
+                        player, targetName, out Vector3 pristineLocal, out string source);
+                Vector3 current = target.localPosition;
+                Vector3 delta = current - pristineLocal;
+                if (!ControllerSwapBindPosePolicy.ShouldRestoreBeforeSwap(
+                        pristineAvailable,
+                        delta.x,
+                        delta.y,
+                        delta.z,
+                        CameraChainLocalResidueToleranceMeters))
+                    return;
+
+                target.localPosition = pristineLocal;
+                if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+                {
+                    context?.Logger?.LogInfo(
+                        "[RestoreSeam.bindpose] bind_pose_normalized: " +
+                        $"frame={Time.frameCount} handle={context.Handle} " +
+                        $"target='{targetName}' beforeLocal={DescribeVector(current)} " +
+                        $"pristineLocal={DescribeVector(pristineLocal)} source='{source}' " +
+                        "action='restore_pristine_before_controller_swap'.");
+                }
+            }
+            catch (Exception exception)
+            {
+                context?.Logger?.LogInfo(
+                    "[RestoreSeam.bindpose] bind_pose_normalization_skipped: " +
+                    $"frame={Time.frameCount} target='{targetName}' " +
+                    $"reason='{exception.Message}'.");
+            }
+        }
+
+        /// <summary>
+        /// #37: burns one zero-delta animator evaluation immediately after a controller
+        /// assignment, BEFORE any stance state replay. Assigning a controller defers Unity's
+        /// write-defaults capture to the next evaluation, so whichever state evaluates first
+        /// decides the defaults every unkeyed state writes back for the controller's lifetime.
+        /// Both swap seams used to evaluate first in the live (possibly crouched) stance —
+        /// equip via the base-layer state replay, teardown via the snapshot restore's final
+        /// Update — which baked crouched arms defaults (metarig 1.017 instead of 2.104) into
+        /// Walk/Sprint/WalkSideways/Jump/JumpLand/FallNoJump. Evaluating here instead runs the
+        /// controller's default standing Idle1, which keys the arms metarig at its authored
+        /// standing rest, so the capture is standing regardless of the player's stance. The
+        /// caller re-poses the live stance in the same frame, so the evaluation never renders.
+        /// </summary>
+        private void PrimeWriteDefaultsCapture(string phase)
+        {
+            try
+            {
+                bodyAnimator.Update(0f);
+                if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+                {
+                    string state = "<unknown>";
+                    try
+                    {
+                        state = DescribeBaseLayerState(
+                            bodyAnimator.GetCurrentAnimatorStateInfo(0).shortNameHash);
+                    }
+                    catch { }
+                    string metarigLocalY = "<unavailable>";
+                    try
+                    {
+                        Transform metarig =
+                            SafeArmsMetarigTransform(context?.Request?.Player);
+                        if (metarig != null)
+                            metarigLocalY = metarig.localPosition.y.ToString("0.###");
+                    }
+                    catch { }
+                    context?.Logger?.LogInfo(
+                        "[RestoreSeam.bindpose] write_defaults_capture_primed: " +
+                        $"frame={Time.frameCount} " +
+                        $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
+                        $"phase='{phase}' evaluatedState='{state}' " +
+                        $"metarigLocalY={metarigLocalY} " +
+                        "action='evaluate_default_standing_state_before_stance_replay'.");
+                }
+            }
+            catch (Exception exception)
+            {
+                context?.Logger?.LogInfo(
+                    "[RestoreSeam.bindpose] write_defaults_capture_prime_skipped: " +
+                    $"frame={Time.frameCount} phase='{phase}' " +
+                    $"reason='{exception.Message}'.");
+            }
         }
 
         private void ApplyCameraChainPositionSnapToRest(
@@ -2646,7 +3173,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 // (and independently of) the pristine chain restore, which only knows the
                 // authored standing defaults. This is what stops the descending cascade.
                 if (guardStop)
-                    ApplyStanceRestHeightSnap(player, crouching, stopReason, "pre_pristine");
+                {
+                    ApplyStanceRestHeightSnap(
+                        player,
+                        crouching,
+                        stopReason,
+                        "pre_pristine",
+                        "displacement_guard_stop");
+                }
 
                 if (!InteractionAnimationApiRestoreDiagnostics
                         .TryRestorePristineCameraChainPositions(
@@ -2666,10 +3200,57 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     return;
                 }
 
-                // The pristine chain carries the authored STANDING defaults, so re-assert the
-                // crouch rest height after it whenever the player exits crouched.
+                // The pristine chain carries the authored STANDING defaults, so a crouched exit
+                // can still legitimately need the crouch rest height re-asserted. It is measured
+                // first and only corrected when it actually deviates: an unconditional re-snap
+                // re-applied a stop-time write to an already-correct chain, which is how the
+                // permanent camera-local offset was baked in the first place.
                 if ((guardStop || crouchRestHeal) && crouching)
-                    ApplyStanceRestHeightSnap(player, true, stopReason, "post_pristine");
+                {
+                    Vector3 postPristinePlayerLocal = player.gameplayCamera != null
+                        ? player.transform.InverseTransformPoint(
+                            player.gameplayCamera.transform.position)
+                        : Vector3.zero;
+                    CameraHorizontalRestoreTarget postPristineHorizontal =
+                        CameraStanceRestorePolicy.ResolveHorizontalTarget(
+                            currentX: postPristinePlayerLocal.x,
+                            currentZ: postPristinePlayerLocal.z,
+                            sessionEntryX: cameraPlayerLocalPositionAtStart.x,
+                            sessionEntryZ: cameraPlayerLocalPositionAtStart.z,
+                            hasSessionEntry: hasCameraPlayerLocalBaseline,
+                            vanillaRestX: VanillaCameraPlayerLocalRestExpectation.x,
+                            vanillaRestZ: VanillaCameraPlayerLocalRestExpectation.z,
+                            horizontalTolerance: CameraHorizontalRestToleranceMeters);
+                    bool needsCorrection = CameraStanceRestorePolicy.NeedsStanceCorrection(
+                        currentX: postPristinePlayerLocal.x,
+                        currentY: postPristinePlayerLocal.y,
+                        currentZ: postPristinePlayerLocal.z,
+                        targetX: postPristineHorizontal.X,
+                        targetY: StanceRestHeight(true),
+                        targetZ: postPristineHorizontal.Z,
+                        heightTolerance: StanceViewpointHeightToleranceMeters,
+                        horizontalTolerance: CameraHorizontalRestToleranceMeters);
+                    if (needsCorrection)
+                    {
+                        ApplyStanceRestHeightSnap(
+                            player,
+                            true,
+                            stopReason,
+                            "post_pristine",
+                            guardStop ? "displacement_guard_stop" : "crouch_rest_heal");
+                    }
+                    else
+                    {
+                        context?.Logger?.LogInfo(
+                            "[RestoreSeam.camerachain] stance_rest_snap_skipped: " +
+                            $"frame={Time.frameCount} handle={context.Handle} " +
+                            $"phase='post_pristine' stopReason='{stopReason}' " +
+                            $"playerLocal={DescribeVector(postPristinePlayerLocal)} " +
+                            $"stanceRestHeight={StanceRestHeight(true):0.###} " +
+                            "reason='chain_already_within_stance_tolerance' " +
+                            "action='leave_camera_chain'.");
+                    }
+                }
 
                 Vector3 afterPlayerLocal = player.gameplayCamera != null
                     ? player.transform.InverseTransformPoint(
@@ -2700,6 +3281,12 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     $"frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
                     $"error='{exception.Message}'.");
+            }
+            finally
+            {
+                // Tripwire for the whole class of defect this seam has produced: whatever path
+                // the teardown took, the gameplay camera's own local position must be pristine.
+                LogCameraChainTeardownResidueCheck(player, "camera_chain_snap");
             }
         }
 
@@ -2896,6 +3483,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 return 0f;
 
             exitRequested = true;
+            // Exit-begin sample: still fully mid-session, nothing restored yet.
+            LogMidSessionSample("exit_begin");
             SetBoolIfExists(body.activeBool, false);
             FireTriggerIfExists(body.exitTrigger);
             float exitSeconds = Mathf.Max(0f, body.exitSeconds);
@@ -2905,7 +3494,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             exitStartFirstPersonWeight = GetLayerWeightOrZero(firstPersonLayerIndex);
             context?.Logger?.LogInfo(
                 "[LCInteractionAnimationAPI] live_body.exit_begun: " +
-                $"handle={context.Handle} exitSeconds={exitSeconds:0.###}.");
+                $"frame={Time.frameCount} handle={context.Handle} " +
+                $"exitSeconds={exitSeconds:0.###} propAttached={propInstance != null}.");
             return exitSeconds;
         }
 
@@ -3252,16 +3842,21 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             // the movement Int from its own replicated motion instead of a CharacterController
             // velocity that observers never populate. For the local player this reproduces the
             // previous isSprinting + thisController.velocity reads exactly.
-            int movement = 0;
+            int movement = MovementParameterPolicy.Idle;
             try
             {
                 LocomotionState locomotion = ResolveLocomotionState();
-                if (locomotion.HorizontalSpeed > 0.2f)
-                    movement = locomotion.Sprinting ? 2 : 1;
+                // Sprint arms are gated strictly on the sprint input state, and never while
+                // crouched: vanilla cannot sprint out of a crouch, but isSprinting stays true
+                // while the key is held, so a crouch-walk otherwise drove Hold -> Sprint.
+                movement = MovementParameterPolicy.Resolve(
+                    locomotion.HorizontalSpeed,
+                    locomotion.Sprinting,
+                    locomotion.Crouching);
             }
             catch
             {
-                movement = 0;
+                movement = MovementParameterPolicy.Idle;
             }
 
             if (movement == lastMovementValue)
@@ -3277,8 +3872,237 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 ResetPlaybackRateProbe();
         }
 
+        private static string DescribeBaseLayerState(int stateHash)
+        {
+            return VanillaBaseLayerStateNames.TryGetValue(stateHash, out string name)
+                ? name
+                : stateHash.ToString();
+        }
+
+        /// <summary>
+        /// Mid-session stance invariant for the swapped Base Layer, and the diagnostic that pins
+        /// which AnyState edge broke it. The controller the live-body session installs is a
+        /// faithful vanilla copy, so it inherits vanilla's one-way crouch cluster: the
+        /// "crouching" Bool gates only the exits out of {CrouchDown, CrouchIdle, CrouchWalk},
+        /// and the ONLY edge back in is the "startCrouching" trigger, which vanilla fires from a
+        /// crouch input edge that has long since passed. An AnyState edge (Jumping, FallNoJump,
+        /// ShortFallLanding) therefore strands a still-crouched session in the standing cluster,
+        /// where the standing Walk clip keys CameraContainer to standing height while the
+        /// first-person arms metarig stays crouched — the reported arms-below-camera break.
+        ///
+        /// Firing from observed state desync (never from input) cannot double up with vanilla's
+        /// own edge, which fires only on the input transition.
+        /// </summary>
+        private void EvaluateBaseLayerStanceSync()
+        {
+            if (bodyAnimator == null || bodyAnimator.layerCount <= 0)
+                return;
+
+            int stateHash;
+            bool isInTransition;
+            try
+            {
+                stateHash = bodyAnimator.GetCurrentAnimatorStateInfo(0).shortNameHash;
+                isInTransition = bodyAnimator.IsInTransition(0);
+            }
+            catch
+            {
+                return;
+            }
+
+            bool crouchingKnown = TryReadCrouching(context?.Request?.Player, out bool crouching);
+
+            if (!hasLastBaseLayerStateHash || lastBaseLayerStateHash != stateHash)
+            {
+                string previous = hasLastBaseLayerStateHash
+                    ? DescribeBaseLayerState(lastBaseLayerStateHash)
+                    : "<none>";
+                hasLastBaseLayerStateHash = true;
+                lastBaseLayerStateHash = stateHash;
+                context?.Logger?.LogInfo(
+                    "[LCInteractionAnimationAPI] live_body.base_layer_state_changed: " +
+                    $"frame={Time.frameCount} " +
+                    $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
+                    $"previousState='{previous}' state='{DescribeBaseLayerState(stateHash)}' " +
+                    $"stateHash={stateHash} isInTransition={isInTransition} " +
+                    $"crouching={crouching} crouchingKnown={crouchingKnown}.");
+                LogMidSessionSample("base_state_change");
+            }
+
+            bool insideCrouchCluster = CrouchStateResyncPolicy.IsCrouchClusterState(
+                stateHash,
+                VanillaCrouchDownStateHash,
+                VanillaCrouchIdleStateHash,
+                VanillaCrouchWalkStateHash);
+
+            EnforceArmsMetarigStandingRest(crouchingKnown, crouching, insideCrouchCluster, stateHash);
+
+            CrouchStateResyncAction action = CrouchStateResyncPolicy.Resolve(
+                sessionActive: active,
+                crouchingKnown,
+                crouching,
+                baseLayerStateKnown: true,
+                insideCrouchCluster,
+                isInTransition,
+                stateHash,
+                Time.frameCount,
+                CrouchStateResyncPolicy.DefaultMinimumFramesBetweenFires,
+                ref crouchStateResyncDebounce);
+            if (action != CrouchStateResyncAction.FireStartCrouching)
+                return;
+
+            FireTriggerIfExists(VanillaStartCrouchingTrigger);
+            crouchStateResyncCount++;
+            context?.Logger?.LogInfo(
+                "[LCInteractionAnimationAPI] live_body.crouch_state_resynced: " +
+                $"frame={Time.frameCount} " +
+                $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
+                $"ejectedToState='{DescribeBaseLayerState(stateHash)}' stateHash={stateHash} " +
+                $"resyncCount={crouchStateResyncCount} " +
+                "action='fire_startCrouching_on_observed_stance_desync'.");
+        }
+
+        // Hysteretic episode state for the arms-metarig stance enforcement (#37). The animator
+        // re-writes the sagged default every frame, so the glide height must persist here — a
+        // step applied to the freshly re-sagged sample would never accumulate.
+        private bool armsMetarigEnforcementEngaged;
+        private int armsMetarigEnforcementFrames;
+        private float armsMetarigEnforcementStartHeight;
+        private float armsMetarigEnforcementGlideHeight;
+
+        /// <summary>
+        /// #37 safety net: while standing outside the crouch cluster, lifts the first-person
+        /// arms metarig back to its standing rest if a poisoned write-defaults capture ever
+        /// drops it to crouch height again (11 of the 15 vanilla Base Layer states do not key
+        /// the metarig and write the captured default back). The write-defaults capture priming
+        /// at both controller swap seams is the primary fix, so this should never engage.
+        ///
+        /// The rest reference is the PARENT-LOCAL pristine baseline (authored 2.104, the value
+        /// Idle1 keys), the same space as <c>metarig.localPosition</c> that is compared and
+        /// written here. Round 7 hardcoded 2.3599 — the PLAYER-local reading of the same pose
+        /// (2.104 x the 1.1216 parent scale) — which declared a phantom 0.256 m sag in every
+        /// healthy standing state and lifted the arms above the head. Runs in the coordinator's
+        /// LateUpdate tick, after the animator has written the frame's pose and before
+        /// rendering. Local player only. See <see cref="ArmsMetarigStanceEnforcementPolicy"/>.
+        /// </summary>
+        private void EnforceArmsMetarigStandingRest(
+            bool crouchingKnown,
+            bool crouching,
+            bool insideCrouchCluster,
+            int stateHash)
+        {
+            try
+            {
+                if (!ArmsMetarigStanceEnforcementPolicy.IsEligible(
+                        active, crouchingKnown, crouching, insideCrouchCluster))
+                {
+                    FinishArmsMetarigEnforcementEpisode("not_eligible");
+                    return;
+                }
+
+                GameNetcodeStuff.PlayerControllerB player = context?.Request?.Player;
+                if (player == null || !IsLocalPlayer(player))
+                    return;
+                Transform metarig = SafeArmsMetarigTransform(player);
+                if (metarig == null)
+                    return;
+
+                // No pristine baseline means no trustworthy rest reference — guessing one is
+                // exactly the round-7 failure mode, so the net stays disarmed.
+                if (!InteractionAnimationApiRestoreDiagnostics
+                        .TryGetPristineCameraChainLocalPosition(
+                            player,
+                            "playerModelArmsMetarig",
+                            out Vector3 pristineLocal,
+                            out string restSource))
+                {
+                    FinishArmsMetarigEnforcementEpisode("no_pristine_baseline");
+                    return;
+                }
+                float standingRest = pristineLocal.y;
+
+                Vector3 local = metarig.localPosition;
+                float animatorSag = standingRest - local.y;
+                bool engaged = ArmsMetarigStanceEnforcementPolicy.AdvanceEngagement(
+                    armsMetarigEnforcementEngaged,
+                    animatorSag,
+                    ArmsMetarigStanceEnforcementPolicy.DefaultEngageSagMeters,
+                    ArmsMetarigStanceEnforcementPolicy.DefaultReleaseSagMeters);
+                if (!engaged)
+                {
+                    FinishArmsMetarigEnforcementEpisode("sag_cleared");
+                    return;
+                }
+
+                if (!armsMetarigEnforcementEngaged)
+                {
+                    armsMetarigEnforcementEngaged = true;
+                    armsMetarigEnforcementFrames = 0;
+                    armsMetarigEnforcementStartHeight = local.y;
+                    // A fresh stand-up glides from the current height; a re-engage while the
+                    // player stayed standing (Idle1 hop into an unkeyed state) resumes from the
+                    // persisted glide so the arms never dip back down first.
+                    armsMetarigEnforcementGlideHeight = Math.Max(
+                        local.y, armsMetarigEnforcementGlideHeight);
+                    SeamLogger?.LogWarning(
+                        "[RestoreSeam.armsmetarig] stance_enforcement_engaged: " +
+                        $"frame={Time.frameCount} handle={SeamHandle} " +
+                        $"state='{DescribeBaseLayerState(stateHash)}' " +
+                        $"metarigLocalY={local.y:0.###} " +
+                        $"standingRest={standingRest:0.###} restSource='{restSource}' " +
+                        $"sag={animatorSag:0.###} action='lift_toward_standing_rest'.");
+                }
+
+                float step = ArmsMetarigStanceEnforcementPolicy.ResolveCorrectionStep(
+                    standingRest - armsMetarigEnforcementGlideHeight,
+                    Time.deltaTime,
+                    ArmsMetarigStanceEnforcementPolicy.DefaultMaxCorrectionMetersPerSecond);
+                armsMetarigEnforcementGlideHeight = Math.Min(
+                    standingRest,
+                    armsMetarigEnforcementGlideHeight + step);
+
+                // Only ever lift: when the animator's own value for this frame is already higher
+                // than the glide (a keyed state mid-transition), it stays authoritative.
+                if (armsMetarigEnforcementGlideHeight > local.y)
+                {
+                    local.y = armsMetarigEnforcementGlideHeight;
+                    metarig.localPosition = local;
+                    armsMetarigEnforcementFrames++;
+                }
+            }
+            catch (Exception exception)
+            {
+                SeamLogger?.LogInfo(
+                    "[RestoreSeam.armsmetarig] stance_enforcement_skipped: " +
+                    $"frame={Time.frameCount} reason='{exception.Message}'.");
+            }
+        }
+
+        private void FinishArmsMetarigEnforcementEpisode(string reason)
+        {
+            // Losing eligibility to a crouch (or session end) invalidates the persisted glide:
+            // the next stand-up must glide from the actual height, not snap to the old rest.
+            if (string.Equals(reason, "not_eligible", StringComparison.Ordinal))
+                armsMetarigEnforcementGlideHeight = 0f;
+
+            if (!armsMetarigEnforcementEngaged)
+                return;
+            armsMetarigEnforcementEngaged = false;
+            SeamLogger?.LogInfo(
+                "[RestoreSeam.armsmetarig] stance_enforcement_released: " +
+                $"frame={Time.frameCount} handle={SeamHandle} " +
+                $"framesEnforced={armsMetarigEnforcementFrames} " +
+                $"startHeight={armsMetarigEnforcementStartHeight:0.###} " +
+                $"reason='{reason}'.");
+            armsMetarigEnforcementFrames = 0;
+        }
+
         private void ResetLocomotionStateResolution()
         {
+            armsMetarigEnforcementEngaged = false;
+            armsMetarigEnforcementFrames = 0;
+            armsMetarigEnforcementStartHeight = 0f;
+            armsMetarigEnforcementGlideHeight = 0f;
             locomotionStateFrame = -1;
             locomotionStateCache = default;
             hasRemoteLocomotionSample = false;
@@ -3287,6 +4111,10 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             remoteLocomotionSmoothedSpeed = 0f;
             remoteLocomotionWalking = false;
             remoteLocomotionSprinting = false;
+            crouchStateResyncDebounce = default;
+            lastBaseLayerStateHash = 0;
+            hasLastBaseLayerStateHash = false;
+            crouchStateResyncCount = 0;
         }
 
         private void ResetPlaybackRateProbe()
@@ -3457,6 +4285,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             if (!active && bodyAnimator == null && bundle == null)
                 return;
 
+            // THE last true mid-session frame. Every restore below — the rotation stabilizer
+            // stand-down, RestoreAnimator, the scoped pose restores, the camera-chain snap —
+            // rewrites these transforms, so this sample MUST stay the first statement after the
+            // early-out and ahead of all of them.
+            if (active)
+                LogMidSessionSample("stop_begin");
+
             FinishPlaybackRateProbe("session_stop");
 
             SeamPhaseStopwatch seamTiming =
@@ -3475,7 +4310,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             double cameraCaptureMs = LapMilliseconds(seamTiming);
             VisorPoseSnapshot stopVisorPose = CaptureSeamVisorPose("stop");
             double visorCaptureMs = LapMilliseconds(seamTiming);
-            DestroyProp();
+            DestroyProp("stop");
             double propDestroyMs = LapMilliseconds(seamTiming);
             string restoreResult = RestoreAnimator(out AnimatorStateRestoreMode restoreStateMode);
             double animatorRestoreMs = LapMilliseconds(seamTiming);
@@ -3564,6 +4399,16 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 "[LCInteractionAnimationAPI] live_body.restored: " +
                 $"handle={(context != null ? context.Handle.ToString() : "<none>")} reason='{stopReason}' " +
                 $"controllerRestore='{restoreResult}' restoreStateMode='{FormatRestoreStateMode(restoreStateMode)}'.");
+            // Empty-hands jitter tripwire: keep watching the same transforms for ten seconds.
+            ArmPostSessionWatcher(
+                midSessionTargets,
+                SafePlayerBodyAnimator(player),
+                fullBodyLayerIndex,
+                firstPersonLayerIndex,
+                context?.Logger ?? InteractionAnimationApiRestoreDiagnostics.StaticLogger,
+                context != null ? context.Handle.ToString() : "<none>");
+            midSessionTargets = default;
+            nextMidSessionSampleAtSeconds = 0f;
             bodyAnimator = null;
             appliedController = null;
             snapshot = null;
@@ -3673,19 +4518,26 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 return;
 
             propReleased = true;
-            DestroyProp();
+            DestroyProp("release");
             context?.Logger?.LogInfo(
                 "[LCInteractionAnimationAPI] live_body.prop_released: " +
                 $"handle={context.Handle} elapsed={elapsedSeconds:0.###} releaseSeconds={prop.releaseSeconds:0.###}.");
         }
 
-        private void DestroyProp()
+        private void DestroyProp(string callSite)
         {
             if (propInstance == null)
                 return;
 
             try { UnityEngine.Object.Destroy(propInstance); } catch { }
             propInstance = null;
+            context?.Logger?.LogInfo(
+                "[LCInteractionAnimationAPI] live_body.prop_destroyed: " +
+                $"frame={Time.frameCount} " +
+                $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
+                $"callSite='{callSite}' " +
+                $"exitElapsedSeconds={exitElapsedSeconds:0.###} " +
+                $"exitDurationSeconds={exitDurationSeconds:0.###}.");
         }
 
         private static void SetLayerRecursive(GameObject root, int layer)
@@ -3804,6 +4656,20 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 return false;
             }
 
+            // #37: the assignment below defers Unity's write-defaults capture to the FIRST
+            // evaluation after the swap — normalizing the pose alone was measured ineffective
+            // in game because the first evaluation used to be the replayed crouch state (round
+            // 6). Normalize the arms chain to its pristine rest, assign, then burn one
+            // zero-delta evaluation in the shell's default standing state (Idle1, which keys
+            // the arms metarig at its authored 2.104) so the capture is standing no matter what
+            // stance the player equips in. Only 4 of the 15 vanilla Base Layer states key the
+            // metarig (Idle1 + the crouch cluster); the rest (Walk, Sprint, WalkSideways, Jump,
+            // JumpLand, FallNoJump...) write the captured default back, so a crouched capture
+            // renders the arms ~1.2 m below the camera in every unkeyed state. The state replay
+            // + Update(0f) further down re-poses the live stance in this same frame, so neither
+            // the normalization nor the priming evaluation is ever visible.
+            NormalizeBindPoseBeforeControllerSwap();
+
             try
             {
                 bodyAnimator.runtimeAnimatorController = controllerToApply;
@@ -3814,6 +4680,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 snapshot = null;
                 return false;
             }
+
+            PrimeWriteDefaultsCapture("start");
 
             appliedController = controllerToApply;
             fullBodyLayerIndex = FindLayerIndex(bodyAnimator, body.fullBodyLayer);
@@ -4115,7 +4983,21 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                             crouchEntryMirroredDuringRestore =
                                 SyncVanillaLocomotionParameters("stop_pre_state_replay");
                         },
-                    restoreBaseLayerState: !stanceMismatch);
+                    restoreBaseLayerState: !stanceMismatch,
+                    // #37 teardown mirror: re-assigning the vanilla controller defers its
+                    // write-defaults capture to the next evaluation, and the restore's own
+                    // final Update used to be that evaluation — taken in the outgoing
+                    // session's stance. A crouched drop thereby baked crouched arm defaults
+                    // into vanilla's unkeyed states (Walk/Sprint at metarig 1.017 while
+                    // standing) for the rest of the run. Normalize the arms chain and burn a
+                    // standing default-state evaluation first; the state replay and crouch
+                    // entry below re-pose the live stance within this same frame.
+                    afterControllerAssigned:
+                        () =>
+                        {
+                            NormalizeBindPoseBeforeControllerSwap();
+                            PrimeWriteDefaultsCapture("stop");
+                        });
 
                 bool preserveLiveBaseLayer = restored &&
                     (stanceMismatch || restoreStateMode == AnimatorStateRestoreMode.Fresh);
@@ -4150,17 +5032,46 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     currentCrouching,
                     crouchEntryMirroredDuringRestore))
                 {
-                    FireTriggerIfExists(VanillaStartCrouchingTrigger);
-                    try { bodyAnimator.Update(0f); } catch { }
+                    // #38: "startCrouching" CROSSFADES from the restored standing Idle1, and the
+                    // camera pin releases mid-blend — the viewpoint pops up toward standing and
+                    // sinks back as the blend completes. The player was crouched the whole time,
+                    // so enter the cluster instantly; the trigger stays as the fallback for a
+                    // controller whose cluster states are not the recognised vanilla set.
+                    bool landedInCrouchCluster = false;
+                    try
+                    {
+                        bodyAnimator.Play(VanillaCrouchIdleStateHash, 0, 0f);
+                        bodyAnimator.Update(0f);
+                        landedInCrouchCluster = CrouchStateResyncPolicy.IsCrouchClusterState(
+                            bodyAnimator.GetCurrentAnimatorStateInfo(0).shortNameHash,
+                            VanillaCrouchDownStateHash,
+                            VanillaCrouchIdleStateHash,
+                            VanillaCrouchWalkStateHash);
+                    }
+                    catch { }
+
+                    CrouchRestoreEntryOutcome entryOutcome =
+                        CrouchTriggerPolicy.ResolveRestoreEntryOutcome(
+                            shouldAssertRestoreEntry: true,
+                            landedInCrouchCluster);
+                    if (entryOutcome == CrouchRestoreEntryOutcome.TriggerFallback)
+                    {
+                        FireTriggerIfExists(VanillaStartCrouchingTrigger);
+                        try { bodyAnimator.Update(0f); } catch { }
+                    }
+
                     if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
                     {
+                        string entryAction = entryOutcome == CrouchRestoreEntryOutcome.InstantEntry
+                            ? "play_crouch_idle_on_restored_base_layer"
+                            : "fire_startCrouching_on_restored_base_layer";
                         context?.Logger?.LogInfo(
                             "[RestoreSeam.locomotion] crouch_entry_asserted: " +
                             $"frame={Time.frameCount} handle={context.Handle} phase='stop' " +
                             $"stanceMismatch={stanceMismatch} " +
                             $"restoreStateMode='{FormatRestoreStateMode(restoreStateMode)}' " +
                             $"preStateReplayEntryMirrored={crouchEntryMirroredDuringRestore} " +
-                            "action='fire_startCrouching_on_restored_base_layer'.");
+                            $"entryOutcome='{entryOutcome}' action='{entryAction}'.");
                     }
                 }
 
@@ -4370,6 +5281,387 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             segments.Reverse();
             return string.Join("/", segments.ToArray());
+        }
+
+        // ---------------------------------------------------------------------------------
+        // [RestoreSeam.midsession] / [RestoreSeam.postsession]
+        //
+        // Every existing probe samples at TEARDOWN — IkBakeProbe 'pre-restore-build' runs after
+        // the pose restores have already slammed the transforms — so none of them can show what
+        // the player actually sees WHILE a session is live. These two samplers emit one compact,
+        // diffable line per sample carrying the whole first-person chain in both the player-local
+        // frame (matching every other log here) and world space, so a single user run can localize
+        // the broken transform instead of proving the camera chain healthy after the fact.
+        // ---------------------------------------------------------------------------------
+
+        // Authored path from ScavengerModelArmsOnly. Resolution falls back to a recursive
+        // name search, and to 'unresolved' in the line, rather than throwing.
+        private const string RightArmIkTargetLocalArmsPath =
+            "metarig/spine.003/RigArms/RightArm/ArmsRightArm_target";
+        private const string LeftArmIkTargetLocalArmsPath =
+            "metarig/spine.003/RigArms/LeftArm/ArmsLeftArm_target";
+        private const string RightArmTipBoneName = "hand.R";
+        private const string LeftArmTipBoneName = "hand.L";
+        private const float MidSessionSampleIntervalSeconds = 1f;
+        private const float PostSessionWatchSeconds = 10f;
+        private const float PostSessionSampleIntervalSeconds = 1f;
+
+        private static bool postSessionWatchSubscribed;
+        private static MidSessionSampleTargets postSessionTargets;
+        private static Animator postSessionAnimator;
+        private static int postSessionFullBodyLayerIndex = -1;
+        private static int postSessionFirstPersonLayerIndex = -1;
+        private static ManualLogSource postSessionLogger;
+        private static string postSessionHandle = "<none>";
+        private static float postSessionEndsAtTime;
+        private static float postSessionNextSampleAtTime;
+
+        /// <summary>
+        /// The transforms both samplers read, resolved once per session so no sample pays a
+        /// hierarchy search. Every field may be null; the line reports 'unresolved' instead.
+        /// </summary>
+        private struct MidSessionSampleTargets
+        {
+            internal bool Armed;
+            internal GameNetcodeStuff.PlayerControllerB Player;
+            internal Transform PlayerTransform;
+            internal Transform GameplayCamera;
+            internal Transform CameraContainer;
+            internal Transform LocalArms;
+            internal Transform ArmsMetarig;
+            internal Transform RightArmTarget;
+            internal Transform LeftArmTarget;
+            internal Transform RightArmTip;
+            internal Transform LeftArmTip;
+        }
+
+        private static MidSessionSampleTargets ResolveMidSessionSampleTargets(
+            GameNetcodeStuff.PlayerControllerB player)
+        {
+            MidSessionSampleTargets targets = default;
+            if (player == null)
+                return targets;
+
+            targets.Player = player;
+            try { targets.PlayerTransform = player.transform; } catch { }
+            try
+            {
+                targets.GameplayCamera = player.gameplayCamera != null
+                    ? player.gameplayCamera.transform
+                    : null;
+            }
+            catch { }
+            try { targets.CameraContainer = player.cameraContainerTransform; } catch { }
+            try { targets.LocalArms = player.localArmsTransform; } catch { }
+            try { targets.ArmsMetarig = player.playerModelArmsMetarig; } catch { }
+
+            Transform ikRoot = targets.LocalArms != null ? targets.LocalArms : targets.ArmsMetarig;
+            targets.RightArmTarget = ResolveSampleTransform(
+                ikRoot, RightArmIkTargetLocalArmsPath, "ArmsRightArm_target");
+            targets.LeftArmTarget = ResolveSampleTransform(
+                ikRoot, LeftArmIkTargetLocalArmsPath, "ArmsLeftArm_target");
+
+            Transform tipRoot = targets.ArmsMetarig != null ? targets.ArmsMetarig : targets.LocalArms;
+            targets.RightArmTip = ResolveSampleTransform(tipRoot, null, RightArmTipBoneName);
+            targets.LeftArmTip = ResolveSampleTransform(tipRoot, null, LeftArmTipBoneName);
+
+            targets.Armed = targets.PlayerTransform != null;
+            return targets;
+        }
+
+        private static Transform ResolveSampleTransform(
+            Transform root,
+            string relativePath,
+            string boneName)
+        {
+            if (root == null)
+                return null;
+
+            if (!string.IsNullOrEmpty(relativePath))
+            {
+                try
+                {
+                    Transform found = root.Find(relativePath);
+                    if (found != null)
+                        return found;
+                }
+                catch { }
+            }
+
+            try { return FindChildRecursive(root, boneName); }
+            catch { return null; }
+        }
+
+        private static string DescribeSampleTransform(
+            string label,
+            Transform playerTransform,
+            Transform target)
+        {
+            if (target == null)
+                return label + "[local=<unresolved> world=<unresolved>]";
+
+            Vector3 world;
+            try { world = target.position; }
+            catch { return label + "[local=<unresolved> world=<unresolved>]"; }
+
+            string local = "<unresolved>";
+            if (playerTransform != null)
+            {
+                try { local = DescribeVector(playerTransform.InverseTransformPoint(world)); }
+                catch { }
+            }
+
+            return label + "[local=" + local + " world=" + DescribeVector(world) + "]";
+        }
+
+        private static float ReadAnimatorLayerWeight(Animator animator, int layerIndex)
+        {
+            if (animator == null || layerIndex < 0 || layerIndex >= animator.layerCount)
+                return -1f;
+
+            try { return animator.GetLayerWeight(layerIndex); }
+            catch { return -1f; }
+        }
+
+        /// <summary>
+        /// One diffable sample line. Deliberately built by a static helper so the mid-session and
+        /// post-session samplers can never drift apart in format.
+        /// </summary>
+        private static string BuildMidSessionSampleLine(
+            MidSessionSampleTargets targets,
+            Animator animator,
+            int fullBodyLayerIndex,
+            int firstPersonLayerIndex,
+            string handle,
+            string phase,
+            float elapsedSeconds)
+        {
+            Transform playerTransform = targets.PlayerTransform;
+            bool crouchingKnown = TryReadCrouching(targets.Player, out bool crouching);
+
+            int baseStateHash = 0;
+            float baseNormalizedTime = 0f;
+            bool baseInTransition = false;
+            bool baseStateKnown = false;
+            int firstPersonStateHash = 0;
+            float firstPersonNormalizedTime = 0f;
+            bool firstPersonStateKnown = false;
+            if (animator != null && animator.layerCount > 0)
+            {
+                try
+                {
+                    AnimatorStateInfo baseState = animator.GetCurrentAnimatorStateInfo(0);
+                    baseStateHash = baseState.shortNameHash;
+                    baseNormalizedTime = baseState.normalizedTime;
+                    baseInTransition = animator.IsInTransition(0);
+                    baseStateKnown = true;
+                }
+                catch { }
+
+                if (firstPersonLayerIndex >= 0 && firstPersonLayerIndex < animator.layerCount)
+                {
+                    try
+                    {
+                        AnimatorStateInfo firstPersonState =
+                            animator.GetCurrentAnimatorStateInfo(firstPersonLayerIndex);
+                        firstPersonStateHash = firstPersonState.shortNameHash;
+                        firstPersonNormalizedTime = firstPersonState.normalizedTime;
+                        firstPersonStateKnown = true;
+                    }
+                    catch { }
+                }
+            }
+
+            return
+                $"frame={Time.frameCount} handle={handle} phase='{phase}' " +
+                $"elapsed={elapsedSeconds:0.###} " +
+                $"crouching={crouching} crouchingKnown={crouchingKnown} " +
+                $"baseState='{(baseStateKnown ? DescribeBaseLayerState(baseStateHash) : "<unresolved>")}' " +
+                $"baseStateHash={baseStateHash} baseNormalizedTime={baseNormalizedTime:0.###} " +
+                $"baseInTransition={baseInTransition} " +
+                $"fullBodyLayer={fullBodyLayerIndex} " +
+                $"fullBodyWeight={ReadAnimatorLayerWeight(animator, fullBodyLayerIndex):0.###} " +
+                $"fpArmsLayer={firstPersonLayerIndex} " +
+                $"fpArmsWeight={ReadAnimatorLayerWeight(animator, firstPersonLayerIndex):0.###} " +
+                $"fpArmsState='{(firstPersonStateKnown ? DescribeBaseLayerState(firstPersonStateHash) : "<unresolved>")}' " +
+                $"fpArmsStateHash={firstPersonStateHash} " +
+                $"fpArmsNormalizedTime={firstPersonNormalizedTime:0.###} " +
+                DescribeSampleTransform("camera", playerTransform, targets.GameplayCamera) + " " +
+                DescribeSampleTransform("cameraContainer", playerTransform, targets.CameraContainer) + " " +
+                DescribeSampleTransform("localArms", playerTransform, targets.LocalArms) + " " +
+                DescribeSampleTransform("armsMetarig", playerTransform, targets.ArmsMetarig) + " " +
+                DescribeSampleTransform("rightArmTarget", playerTransform, targets.RightArmTarget) + " " +
+                DescribeSampleTransform("leftArmTarget", playerTransform, targets.LeftArmTarget) + " " +
+                DescribeSampleTransform("rightArmTip", playerTransform, targets.RightArmTip) + " " +
+                DescribeSampleTransform("leftArmTip", playerTransform, targets.LeftArmTip) + ".";
+        }
+
+        /// <summary>
+        /// Resolves the sampler targets for a starting session. First-person only: the whole
+        /// sample set describes the local viewpoint chain, so a remote session leaves it disarmed
+        /// and silent.
+        /// </summary>
+        private void StartMidSessionSampler()
+        {
+            midSessionTargets = default;
+            nextMidSessionSampleAtSeconds = MidSessionSampleIntervalSeconds;
+
+            // Diagnostics gate: the mid-session sampler (and the post-session watcher, which
+            // inherits these targets at Stop) only arms while the restore seam frame logger is
+            // enabled. Both ship dormant; a regression hunt turns them on via config.
+            if (!InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+                return;
+
+            GameNetcodeStuff.PlayerControllerB player = context?.Request?.Player;
+            if (player == null || !IsLocalPlayer(player))
+                return;
+
+            midSessionTargets = ResolveMidSessionSampleTargets(player);
+            if (!midSessionTargets.Armed)
+            {
+                context?.Logger?.LogInfo(
+                    "[RestoreSeam.midsession] sampler_unavailable: " +
+                    $"frame={Time.frameCount} " +
+                    $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
+                    "reason='player_transform_unresolved' action='skip_session_sampling'.");
+                return;
+            }
+
+            context?.Logger?.LogInfo(
+                "[RestoreSeam.midsession] sampler_ready: " +
+                $"frame={Time.frameCount} " +
+                $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
+                $"camera={(midSessionTargets.GameplayCamera != null)} " +
+                $"cameraContainer={(midSessionTargets.CameraContainer != null)} " +
+                $"localArms={(midSessionTargets.LocalArms != null)} " +
+                $"armsMetarig={(midSessionTargets.ArmsMetarig != null)} " +
+                $"rightArmTarget={(midSessionTargets.RightArmTarget != null)} " +
+                $"leftArmTarget={(midSessionTargets.LeftArmTarget != null)} " +
+                $"rightArmTip={(midSessionTargets.RightArmTip != null)} " +
+                $"leftArmTip={(midSessionTargets.LeftArmTip != null)}.");
+        }
+
+        private void LogMidSessionSample(string phase)
+        {
+            if (!midSessionTargets.Armed)
+                return;
+
+            ManualLogSource logger = context?.Logger ??
+                InteractionAnimationApiRestoreDiagnostics.StaticLogger;
+            if (logger == null)
+                return;
+
+            try
+            {
+                logger.LogInfo(
+                    "[RestoreSeam.midsession] sample: " +
+                    BuildMidSessionSampleLine(
+                        midSessionTargets,
+                        bodyAnimator,
+                        fullBodyLayerIndex,
+                        firstPersonLayerIndex,
+                        context != null ? context.Handle.ToString() : "<none>",
+                        phase,
+                        elapsedSeconds));
+            }
+            catch { }
+        }
+
+        private void LogPeriodicMidSessionSample()
+        {
+            if (!midSessionTargets.Armed || elapsedSeconds < nextMidSessionSampleAtSeconds)
+                return;
+
+            nextMidSessionSampleAtSeconds = elapsedSeconds + MidSessionSampleIntervalSeconds;
+            LogMidSessionSample("tick");
+        }
+
+        /// <summary>
+        /// Empty-hands jitter tripwire. The reported jitter starts after the FIRST pickup and
+        /// persists with nothing held, so it has to be observable outside a session: this keeps
+        /// sampling the exact same line for ten seconds after Stop and then unsubscribes, leaving
+        /// no residual per-frame cost.
+        /// </summary>
+        private static void ArmPostSessionWatcher(
+            MidSessionSampleTargets targets,
+            Animator animator,
+            int fullBodyLayerIndex,
+            int firstPersonLayerIndex,
+            ManualLogSource logger,
+            string handle)
+        {
+            DisarmPostSessionWatcher();
+            if (!targets.Armed || logger == null)
+                return;
+
+            postSessionTargets = targets;
+            postSessionAnimator = animator;
+            postSessionFullBodyLayerIndex = fullBodyLayerIndex;
+            postSessionFirstPersonLayerIndex = firstPersonLayerIndex;
+            postSessionLogger = logger;
+            postSessionHandle = handle ?? "<none>";
+            postSessionEndsAtTime = Time.time + PostSessionWatchSeconds;
+            postSessionNextSampleAtTime = Time.time;
+            try
+            {
+                Application.onBeforeRender += PostSessionWatcherBeforeRender;
+                postSessionWatchSubscribed = true;
+            }
+            catch
+            {
+                postSessionWatchSubscribed = false;
+            }
+        }
+
+        private static void DisarmPostSessionWatcher()
+        {
+            if (postSessionWatchSubscribed)
+            {
+                try { Application.onBeforeRender -= PostSessionWatcherBeforeRender; }
+                catch { }
+                postSessionWatchSubscribed = false;
+            }
+
+            postSessionTargets = default;
+            postSessionAnimator = null;
+            postSessionLogger = null;
+            postSessionHandle = "<none>";
+            postSessionFullBodyLayerIndex = -1;
+            postSessionFirstPersonLayerIndex = -1;
+        }
+
+        private static void PostSessionWatcherBeforeRender()
+        {
+            // The only per-frame cost while armed.
+            float now = Time.time;
+            if (now < postSessionNextSampleAtTime)
+                return;
+
+            if (now > postSessionEndsAtTime || !postSessionTargets.Armed ||
+                postSessionTargets.PlayerTransform == null || postSessionLogger == null)
+            {
+                DisarmPostSessionWatcher();
+                return;
+            }
+
+            postSessionNextSampleAtTime = now + PostSessionSampleIntervalSeconds;
+            try
+            {
+                postSessionLogger.LogInfo(
+                    "[RestoreSeam.postsession] sample: " +
+                    BuildMidSessionSampleLine(
+                        postSessionTargets,
+                        postSessionAnimator,
+                        postSessionFullBodyLayerIndex,
+                        postSessionFirstPersonLayerIndex,
+                        postSessionHandle,
+                        "post_session",
+                        Mathf.Max(0f, PostSessionWatchSeconds - (postSessionEndsAtTime - now))));
+            }
+            catch
+            {
+                DisarmPostSessionWatcher();
+            }
         }
 
         private void LogFrameDiagnostics()
@@ -5607,6 +6899,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
         internal static void ShutdownBundleCache()
         {
+            // Plugin teardown must never leave the empty-hands watcher subscribed.
+            DisarmPostSessionWatcher();
             foreach (AssetBundle cached in RetainedBundles)
             {
                 if (cached == null)
@@ -5623,7 +6917,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             StopTransformChainDiagnostics();
             StopExternalCameraPresentationDiagnostics();
             StopLocalVisorHardGlue();
-            DestroyProp();
+            DestroyProp("failed_start");
             StopLocalCameraRotationStabilizer(restoreSessionEntryRotation: true);
             StopLocalCameraPositionStabilizer(restorePosition: true, deferRelease: false);
             RestoreLiveRigBuilders();
@@ -6031,6 +7325,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private float crouchRestHeight;
         private float standRestHeight;
         private bool stanceRelative;
+        // Container-level holding. A world-space write on the gameplay camera bakes the difference
+        // between the pin target and the vanilla-authored container pose into the camera's own
+        // localPosition, and nothing in vanilla ever rewrites that transform — the permanent
+        // "camera below the floor" offset. Translating the container achieves the same held
+        // viewpoint while leaving gameplayCamera.localPosition pristine, and vanilla re-authors the
+        // container from its clips on the next frame, so the write is transient by construction.
+        private Transform cameraContainer;
+        private Action releaseCallback;
 
         internal void Initialize(
             Transform playerRoot,
@@ -6042,7 +7344,38 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             this.playerLocalPosition = playerLocalPosition;
             stanceRelative = false;
             stancePlayer = null;
+            cameraContainer = null;
+            releaseCallback = null;
+            releaseLateUpdates = -1;
             ApplyNow();
+        }
+
+        /// <summary>
+        /// Holds the pin pose by translating <paramref name="container"/> instead of writing the
+        /// camera's world position. Must be called before the first post-teardown ApplyNow.
+        /// </summary>
+        internal void HoldAtContainerLevel(Transform container)
+        {
+            cameraContainer = CameraPinReleasePolicy.CanCorrectAtContainerLevel(
+                hasContainer: container != null,
+                containerIsCamera: ReferenceEquals(container, cameraTransform),
+                cameraIsChildOfContainer:
+                    container != null && cameraTransform != null &&
+                    cameraTransform.IsChildOf(container))
+                ? container
+                : null;
+        }
+
+        internal bool HoldsAtContainerLevel => cameraContainer != null;
+
+        /// <summary>
+        /// Invoked once, on the LateUpdate that ends the deferred-release window, before the
+        /// component is destroyed. The presenter uses it to wipe any camera-local residue the
+        /// window could have left and to re-run the teardown tripwire over that window.
+        /// </summary>
+        internal void SetReleaseCallback(Action callback)
+        {
+            releaseCallback = callback;
         }
 
         internal void InitializeStanceRelative(
@@ -6063,6 +7396,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             stanceRelativeHeightOffset = playerLocalPosition.y -
                 (crouchingAtCapture ? crouchRestHeight : standRestHeight);
             stanceRelative = player != null;
+            cameraContainer = null;
+            releaseCallback = null;
+            releaseLateUpdates = -1;
             ApplyNow();
         }
 
@@ -6086,7 +7422,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
         internal void ReleaseAfterLateUpdates(int lateUpdates)
         {
-            releaseLateUpdates = Mathf.Max(1, lateUpdates);
+            releaseLateUpdates =
+                CameraPinReleasePolicy.ResolveScheduledLateUpdates(lateUpdates);
         }
 
         /// <summary>
@@ -6114,22 +7451,33 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         {
             if (playerRoot == null || cameraTransform == null)
                 return;
-            cameraTransform.position =
-                playerRoot.TransformPoint(ResolveTargetPlayerLocalPosition());
+
+            Vector3 targetWorld = playerRoot.TransformPoint(ResolveTargetPlayerLocalPosition());
+            if (cameraContainer != null)
+            {
+                // Same correction target as every other stop-time camera repair: move the parent
+                // vanilla authors, never the child whose local position vanilla never rewrites.
+                cameraContainer.position += targetWorld - cameraTransform.position;
+                return;
+            }
+
+            cameraTransform.position = targetWorld;
         }
 
         private void LateUpdate()
         {
             ApplyNow();
-            if (releaseLateUpdates < 0)
+            CameraPinReleaseStep step = CameraPinReleasePolicy.AdvanceRelease(releaseLateUpdates);
+            releaseLateUpdates = step.RemainingLateUpdates;
+            if (!step.ReleaseNow)
                 return;
 
-            releaseLateUpdates--;
-            if (releaseLateUpdates <= 0)
-            {
-                enabled = false;
-                UnityEngine.Object.Destroy(this);
-            }
+            Action callback = releaseCallback;
+            releaseCallback = null;
+            enabled = false;
+            try { callback?.Invoke(); }
+            catch { }
+            UnityEngine.Object.Destroy(this);
         }
     }
 
