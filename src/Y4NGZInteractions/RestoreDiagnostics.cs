@@ -318,7 +318,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     ConfigSection,
                     "Heal Camera Drift At Session Start",
                     true,
-                    "When enabled, each local live-body session start measures the gameplay camera against its vanilla player-local rest position (0, 2.351, -0.3545) and, when it deviates by more than the heal threshold (2 cm) but less than the displacement-guard threshold, restores the camera chain local positions to the authored defaults before capturing the session baseline. This repairs viewpoint drift accumulated by earlier sessions or other mods instead of adopting the contaminated pose as the restore target. This is a new key so existing profiles receive the default-on fix.");
+                    "When enabled, each local live-body session start measures the gameplay camera against its vanilla player-local rest position (0, 2.351, 0.0135) and, when it deviates by more than the heal threshold (2 cm) but less than the displacement-guard threshold, restores the camera chain local positions to the authored defaults before capturing the session baseline. This repairs viewpoint drift accumulated by earlier sessions or other mods instead of adopting the contaminated pose as the restore target. This is a new key so existing profiles receive the default-on fix.");
                 restoreVisorPose = config.Bind(
                     ConfigSection,
                     "Restore Visor Pose",

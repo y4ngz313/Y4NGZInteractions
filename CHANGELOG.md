@@ -1,6 +1,6 @@
 # Changelog
 
-Last updated: 2026-08-31
+Last updated: 2026-09-02
 
 ## 1.0.2
 
@@ -8,13 +8,21 @@ Last updated: 2026-08-31
   animation, camera, and movement.
 - Fixed equipping OR dropping a weapon while crouched leaving the first-person
   arms about a meter below the camera in every walking, sprinting, strafing,
-  jumping, and falling state (only the idle and crouch states author the arms
-  height; the rest write back a default pose Unity captures at each controller
-  swap, in whatever stance the player held). Both swap seams — equip and the
-  teardown restore — now normalize the arms chain and evaluate the controller's
-  default standing state once before replaying the live stance, so the captured
-  default is always the standing rest. A stance safety net additionally lifts
-  the arms if a capture is ever poisoned by a path outside these seams.
+  jumping, and falling state, and leaving movement stalling and snapping on
+  every walk start afterwards. Only the idle and crouch states author the arms
+  height, and only the walk and crouch states author the body rig's root
+  offset; the rest write back a default pose Unity captures at the first
+  natural evaluation after each controller swap, in whatever stance the player
+  held. Two per-frame owners now hold the authored standing values for those
+  states, in and out of interactions, and write nothing while the capture is
+  healthy (`Own Arms Metarig Write-Back`, `Own Metarig Root Write-Back`).
+- Fixed the top edge of the visor clipping for one frame on every weapon
+  pickup and drop, and the camera jumping back for one frame on a crouched
+  drop: the seam repairs measured the camera against a rest position recorded
+  under the poisoned rig and against the prefab's pre-animation camera pose,
+  and the teardown camera pin then held that pose for two frames.
+- Fixed the first-person arms rendering one stale frame at the start of an
+  interaction: the start seam now applies the same arms glue as the stop seam.
 - Fixed the camera briefly jerking up and back down on a crouched drop: the
   restored base layer now re-enters the crouch states instantly instead of
   crossfading from the standing idle.
