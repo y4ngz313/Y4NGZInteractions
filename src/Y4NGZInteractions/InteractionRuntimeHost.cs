@@ -3,6 +3,7 @@ using BepInEx.Logging;
 using HarmonyLib;
 using UnityEngine;
 using Y4NGZInteractions.InteractionAnimationApi;
+using Y4NGZInteractions.InteractionAnimationApi.Presenters;
 
 namespace Y4NGZInteractions
 {
@@ -35,6 +36,20 @@ namespace Y4NGZInteractions
             this.harmony = harmony;
             this.log = log;
             Application.quitting += OnApplicationQuitting;
+
+            // #37 round 18b: early-ordered LateUpdate pass of the metarig-root owner (see
+            // MetarigRootWriteBackOwnerRunner). Lives on this hidden DDOL object so nothing
+            // external can reach it (#31).
+            try
+            {
+                gameObject.AddComponent<MetarigRootWriteBackOwnerRunner>();
+            }
+            catch (Exception exception)
+            {
+                log?.LogWarning(
+                    "[RestoreSeam.metarigroot] early_runner_failed: " + exception.Message +
+                    " (the late host pass still runs).");
+            }
         }
 
         private void LateUpdate()
@@ -48,6 +63,20 @@ namespace Y4NGZInteractions
             {
                 InteractionAnimationApiRestoreDiagnostics.EndCoordinatorLateUpdateTick();
             }
+
+            // #37: the arms-metarig write-back owner runs after the coordinator tick so its
+            // correction is the frame's last word on the binding, and it runs out of session
+            // too — the post-drop poisoned capture lives on the vanilla graph.
+            ArmsMetarigWriteBackOwner.LateUpdateTick();
+            // #37 round 18: the metarig ROOT owner, the binding the round-17b probe proved
+            // carries the movement-start stall, runs next and before the probe so the probe
+            // reads the corrected value.
+            // Round 18b: the EARLY pass lives on MetarigRootWriteBackOwnerRunner (execution
+            // order -32000) so the correction lands before vanilla places the visor; this
+            // late pass is the no-op safety net.
+            MetarigRootWriteBackOwner.LateUpdateTick("late");
+            // #37 round 17: movement-start probe (config-gated, off by default).
+            MovementStartProbe.LateUpdateTick();
         }
 
         private void OnApplicationQuit()

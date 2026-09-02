@@ -75,6 +75,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         private static ConfigEntry<bool> enableRemoteRigDiffProbe;
         private static ConfigEntry<bool> enableIkBakeProbe;
         private static ConfigEntry<string> restoreStateMode;
+        private static ConfigEntry<bool> enableArmsMetarigWriteBackOwner;
+        private static ConfigEntry<bool> enableMetarigRootWriteBackOwner;
+        private static ConfigEntry<bool> enableMovementStartProbe;
         private static InteractionAnimationRestoreDiagnosticsRunner runner;
         private static PlayerControllerB observedPlayer;
         private static PlayerControllerB renderSessionPlayer;
@@ -186,6 +189,15 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
         internal static bool RestoreVanillaArmsGlueEnabled =>
             initialized && ReadEnabled(restoreVanillaArmsGlue, true);
+
+        internal static bool ArmsMetarigWriteBackOwnerEnabled =>
+            initialized && ReadEnabled(enableArmsMetarigWriteBackOwner, true);
+
+        internal static bool MetarigRootWriteBackOwnerEnabled =>
+            initialized && ReadEnabled(enableMetarigRootWriteBackOwner, true);
+
+        internal static bool MovementStartProbeEnabled =>
+            initialized && ReadEnabled(enableMovementStartProbe, false);
 
         internal static AnimatorStateRestoreMode ReadRestoreStateMode()
         {
@@ -339,6 +351,21 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     new ConfigDescription(
                         "Selects how vanilla animator layer states resume at live-body Stop: fresh starts from controller defaults, crossfade blends to captured states, and replay immediately restores captured states.",
                         new AcceptableValueList<string>("fresh", "crossfade", "replay")));
+                enableArmsMetarigWriteBackOwner = config.Bind(
+                    ConfigSection,
+                    "Own Arms Metarig Write-Back",
+                    true,
+                    "When enabled, a per-frame owner keeps the local player's first-person arms metarig at the authored stance height in animator states that do not key it, in and out of live-body sessions. Unity re-captures the write-defaults value those states write back at the first natural evaluations after any controller swap, at whatever stance the player holds; a crouched weapon pickup or drop therefore strands the arms at crouch height in every non-idle standing state until a standing pickup and drop. The owner reproduces the healthy capture's exact values and writes nothing while the capture is healthy.");
+                enableMetarigRootWriteBackOwner = config.Bind(
+                    ConfigSection,
+                    "Own Metarig Root Write-Back",
+                    true,
+                    "When enabled, a per-frame owner keeps the local player's metarig root (the ScavengerModel/metarig animator object) at the authored standing offset in animator states that do not key it (Idle1, Sprint, Jump), in and out of live-body sessions. Unity re-captures the write-defaults value those states write back at the first natural evaluations after any controller swap; a crouched weapon pickup or drop captures the crouched -0.184 m offset, and every idle-to-walk crossfade afterwards drags the whole rig, camera included, by that offset - the movement-start stall and jitter. The owner reproduces the healthy capture's exact values and writes nothing while the capture is healthy.");
+                enableMovementStartProbe = config.Bind(
+                    ConfigSection,
+                    "Enable Movement Start Probe",
+                    false,
+                    "#37 movement-start probe. Logs one line per frame for the local player around every movement start (move input rise or Walking rise): frame time, move input, walkForce, carry weight, controller velocity and grounded state, position delta, camera player-local position, and base-layer animator state; also logs any frame longer than 50 ms. Diagnostics only; leave false in shipped profiles.");
             }
 
             bool forceDiagnostics = ForceDiagnosticsForRegressionHunt;
@@ -487,6 +514,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             enableRestoreRigStateLogger = null;
             enablePristineRigDiffProbe = null;
             forceDiagnosticsForRegressionHunt = null;
+            enableMovementStartProbe = null;
+            enableArmsMetarigWriteBackOwner = null;
+            enableMetarigRootWriteBackOwner = null;
             restoreRigControlPose = null;
             restorePristineRigControlPose = null;
             restoreThirdPersonRigControlPose = null;

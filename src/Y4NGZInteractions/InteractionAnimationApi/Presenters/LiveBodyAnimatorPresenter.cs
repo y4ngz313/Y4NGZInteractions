@@ -31,6 +31,20 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         // camera container and vanilla never rewrites its local position, so anything this
         // controller leaves there is permanent. 1 mm is well inside float noise on the chain.
         private const float CameraChainLocalResidueToleranceMeters = 0.001f;
+        // Poison threshold for the write-defaults capture probe (#37 round 11). The two
+        // authored arms-metarig heights sit 1.087 m apart (2.104 standing vs 1.017 crouch);
+        // 0.5 m separates a crouched capture from blend noise around the standing rest.
+        private const float CaptureProbePoisonToleranceMeters = 0.5f;
+        // #37 round 12: sentinel parked on the arms-metarig binding before a probe evaluation
+        // so "the evaluation wrote value X" and "the evaluation wrote nothing and X was
+        // already there" stop reading identically (the round-11 confound). 1.7 is neither
+        // authored height (2.104 standing, 1.017 crouch): whichever side the reading lands
+        // on is decisive. Parent-local, the same space as metarig.localPosition.
+        private const float CaptureProbeSentinelLocalY = 1.7f;
+        // Match window for classifying a probe reading against the sentinel and the expected
+        // writer values. The nearest pair of references (sentinel 1.7 vs standing 2.104) sits
+        // 0.404 m apart, so 0.05 m separates cleanly while absorbing blend noise.
+        private const float CaptureProbeSentinelMatchToleranceMeters = 0.05f;
         private const double PlaybackRateSampleIntervalSeconds = 1d;
         private const double PlaybackRateMinimumSampleSeconds = 0.05d;
         // Vanilla glides the camera between the stand and crouch heights over roughly a
@@ -3050,17 +3064,143 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         }
 
         /// <summary>
+        /// #37 round 10: live pose captured around a RigBuilder graph build. The build is the
+        /// seam where the write-defaults capture actually happens (the round-8 assignment-seam
+        /// priming executed and changed nothing in round 9), and both seams build AFTER the
+        /// live stance is re-posed, so the chain must be held at pristine standing for the
+        /// build itself and put back immediately after. See <see cref="RigBuildCapturePolicy"/>.
+        /// </summary>
+        private readonly struct RigBuildPoseScopeTarget
+        {
+            internal readonly Transform Target;
+            internal readonly Vector3 LivePose;
+            internal readonly bool Normalized;
+
+            internal RigBuildPoseScopeTarget(Transform target, Vector3 livePose, bool normalized)
+            {
+                Target = target;
+                LivePose = livePose;
+                Normalized = normalized;
+            }
+        }
+
+        private readonly struct RigBuildPoseScope
+        {
+            internal readonly RigBuildPoseScopeTarget LocalArms;
+            internal readonly RigBuildPoseScopeTarget Metarig;
+
+            internal RigBuildPoseScope(
+                RigBuildPoseScopeTarget localArms, RigBuildPoseScopeTarget metarig)
+            {
+                LocalArms = localArms;
+                Metarig = metarig;
+            }
+        }
+
+        private RigBuildPoseScope NormalizeArmsChainForRigBuild(string phase)
+        {
+            GameNetcodeStuff.PlayerControllerB player = context?.Request?.Player;
+            return new RigBuildPoseScope(
+                NormalizeRigBuildTarget(
+                    player, phase, "localArmsTransform", SafeLocalArmsTransform(player)),
+                NormalizeRigBuildTarget(
+                    player, phase, "playerModelArmsMetarig", SafeArmsMetarigTransform(player)));
+        }
+
+        private RigBuildPoseScopeTarget NormalizeRigBuildTarget(
+            GameNetcodeStuff.PlayerControllerB player,
+            string phase,
+            string targetName,
+            Transform target)
+        {
+            try
+            {
+                if (target == null)
+                    return new RigBuildPoseScopeTarget(null, Vector3.zero, normalized: false);
+
+                bool pristineAvailable = InteractionAnimationApiRestoreDiagnostics
+                    .TryGetPristineCameraChainLocalPosition(
+                        player, targetName, out Vector3 pristineLocal, out string source);
+                Vector3 current = target.localPosition;
+                Vector3 delta = current - pristineLocal;
+                if (!RigBuildCapturePolicy.ShouldNormalizeBeforeBuild(
+                        pristineAvailable,
+                        delta.x,
+                        delta.y,
+                        delta.z,
+                        CameraChainLocalResidueToleranceMeters))
+                {
+                    return new RigBuildPoseScopeTarget(target, current, normalized: false);
+                }
+
+                target.localPosition = pristineLocal;
+                if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+                {
+                    context?.Logger?.LogInfo(
+                        "[RestoreSeam.bindpose] rig_build_pose_normalized: " +
+                        $"frame={Time.frameCount} " +
+                        $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
+                        $"phase='{phase}' target='{targetName}' " +
+                        $"liveLocal={DescribeVector(current)} " +
+                        $"pristineLocal={DescribeVector(pristineLocal)} source='{source}' " +
+                        "action='hold_pristine_standing_for_rig_build_capture'.");
+                }
+                return new RigBuildPoseScopeTarget(target, current, normalized: true);
+            }
+            catch (Exception exception)
+            {
+                context?.Logger?.LogInfo(
+                    "[RestoreSeam.bindpose] rig_build_pose_normalization_skipped: " +
+                    $"frame={Time.frameCount} phase='{phase}' target='{targetName}' " +
+                    $"reason='{exception.Message}'.");
+                return new RigBuildPoseScopeTarget(null, Vector3.zero, normalized: false);
+            }
+        }
+
+        private void RestoreArmsChainAfterRigBuild(in RigBuildPoseScope scope, string phase)
+        {
+            RestoreRigBuildTarget(scope.LocalArms, phase, "localArmsTransform");
+            RestoreRigBuildTarget(scope.Metarig, phase, "playerModelArmsMetarig");
+        }
+
+        private void RestoreRigBuildTarget(
+            in RigBuildPoseScopeTarget target, string phase, string targetName)
+        {
+            try
+            {
+                if (!RigBuildCapturePolicy.ShouldRestoreLivePoseAfterBuild(target.Normalized) ||
+                    target.Target == null)
+                {
+                    return;
+                }
+
+                target.Target.localPosition = target.LivePose;
+                if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+                {
+                    context?.Logger?.LogInfo(
+                        "[RestoreSeam.bindpose] rig_build_pose_restored: " +
+                        $"frame={Time.frameCount} phase='{phase}' target='{targetName}' " +
+                        $"liveLocal={DescribeVector(target.LivePose)} " +
+                        "action='reapply_live_pose_after_rig_build_capture'.");
+                }
+            }
+            catch (Exception exception)
+            {
+                context?.Logger?.LogInfo(
+                    "[RestoreSeam.bindpose] rig_build_pose_restore_skipped: " +
+                    $"frame={Time.frameCount} phase='{phase}' target='{targetName}' " +
+                    $"reason='{exception.Message}'.");
+            }
+        }
+
+        /// <summary>
         /// #37: burns one zero-delta animator evaluation immediately after a controller
-        /// assignment, BEFORE any stance state replay. Assigning a controller defers Unity's
-        /// write-defaults capture to the next evaluation, so whichever state evaluates first
-        /// decides the defaults every unkeyed state writes back for the controller's lifetime.
-        /// Both swap seams used to evaluate first in the live (possibly crouched) stance —
-        /// equip via the base-layer state replay, teardown via the snapshot restore's final
-        /// Update — which baked crouched arms defaults (metarig 1.017 instead of 2.104) into
-        /// Walk/Sprint/WalkSideways/Jump/JumpLand/FallNoJump. Evaluating here instead runs the
-        /// controller's default standing Idle1, which keys the arms metarig at its authored
-        /// standing rest, so the capture is standing regardless of the player's stance. The
-        /// caller re-poses the live stance in the same frame, so the evaluation never renders.
+        /// assignment, BEFORE any stance state replay, in the controller's default standing
+        /// Idle1. Round 9 proved this priming does NOT decide what the unkeyed states write
+        /// back — that capture belongs to the RigBuilder graph build, which runs later with
+        /// the live stance re-posed (see RigBuildCapturePolicy). Kept as defense in depth: it
+        /// leaves the animator in a defined standing evaluation before the stance replay, and
+        /// the caller re-poses the live stance in the same frame so it never renders.
         /// </summary>
         private void PrimeWriteDefaultsCapture(string phase)
         {
@@ -3993,6 +4133,16 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         {
             try
             {
+                // #37 round 13: the deterministic write-back owner supersedes this safety net
+                // (it owns the binding every frame, in and out of session, with the exact
+                // authored heights instead of a glide). Keep the net only as the fallback for
+                // profiles that disable the owner.
+                if (InteractionAnimationApiRestoreDiagnostics.ArmsMetarigWriteBackOwnerEnabled)
+                {
+                    FinishArmsMetarigEnforcementEpisode("superseded_by_write_back_owner");
+                    return;
+                }
+
                 if (!ArmsMetarigStanceEnforcementPolicy.IsEligible(
                         active, crouchingKnown, crouching, insideCrouchCluster))
                 {
@@ -4656,18 +4806,12 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 return false;
             }
 
-            // #37: the assignment below defers Unity's write-defaults capture to the FIRST
-            // evaluation after the swap — normalizing the pose alone was measured ineffective
-            // in game because the first evaluation used to be the replayed crouch state (round
-            // 6). Normalize the arms chain to its pristine rest, assign, then burn one
-            // zero-delta evaluation in the shell's default standing state (Idle1, which keys
-            // the arms metarig at its authored 2.104) so the capture is standing no matter what
-            // stance the player equips in. Only 4 of the 15 vanilla Base Layer states key the
-            // metarig (Idle1 + the crouch cluster); the rest (Walk, Sprint, WalkSideways, Jump,
-            // JumpLand, FallNoJump...) write the captured default back, so a crouched capture
-            // renders the arms ~1.2 m below the camera in every unkeyed state. The state replay
-            // + Update(0f) further down re-poses the live stance in this same frame, so neither
-            // the normalization nor the priming evaluation is ever visible.
+            // #37: round 9 proved the operative write-defaults capture happens at the
+            // RigBuilder graph build (see RigBuildCapturePolicy), not at this assignment — the
+            // rounds 6/8 normalization and priming here executed and did not change what the
+            // unkeyed states wrote. Both are kept as cheap defense in depth: they hold for the
+            // window between the assignment and the rig build, and they still clear teardown
+            // residue on the chain before the swap.
             NormalizeBindPoseBeforeControllerSwap();
 
             try
@@ -5125,10 +5269,145 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
         private void RestoreLiveRigBuilders()
         {
+            if (suppressedRigBuilders.Count == 0)
+                return;
+
+            // Re-enabling a RigBuilder builds its graph in OnEnable, which captures the
+            // write-defaults the unkeyed Base Layer states write back (#37 round 10). Hold the
+            // arms chain at pristine standing across the re-enable so the capture is standing
+            // regardless of the player's stance, then put the live pose back.
+            RigBuildPoseScope poseScope = NormalizeArmsChainForRigBuild("reenable");
             for (int i = suppressedRigBuilders.Count - 1; i >= 0; i--)
                 suppressedRigBuilders[i].Restore();
 
             suppressedRigBuilders.Clear();
+            SteerWriteDefaultsCaptureAfterRigBuild("reenable");
+            RestoreArmsChainAfterRigBuild(in poseScope, "reenable");
+        }
+
+        private static readonly int VanillaIdle1StateHash = Animator.StringToHash("Idle1");
+        private static readonly int VanillaWalkStateHash = Animator.StringToHash("Walk");
+
+        /// <summary>
+        /// #37 rounds 11-12: round 10 held the scene pose pristine ACROSS RigBuilder.Build()
+        /// and the crouched default was still captured — the capture defers past the build to
+        /// the first animator evaluation of the new graph. Steer that first evaluation: with
+        /// the arms chain still pristine, evaluate the base layer's default standing Idle1
+        /// (keys the metarig at its authored 2.104), then PROBE what unkeyed Walk writes for
+        /// this binding, then replay the live state at its recorded normalized time.
+        ///
+        /// Round 11's probe was CONFOUNDED: it read the metarig after the Walk evaluation
+        /// without disturbing what Idle1 had just written, so "Walk wrote the captured
+        /// default (2.104)" and "Walk wrote nothing and 2.104 was Idle1's leftover" produced
+        /// the same healthy reading — while natural frames stayed broken. Round 12 parks the
+        /// binding on a sentinel height between the two evaluations: Walk either overwrites
+        /// it (write-back exists) or the sentinel survives (retention — round 9's theory —
+        /// meaning nothing writes this binding at runtime and every capture-steering round
+        /// aimed at a mechanism that does not operate here; logged as a warning either way
+        /// the decisive answer lands). All evaluations happen inside one seam frame and never
+        /// render; a surviving sentinel is scrubbed back to Idle1's standing write before the
+        /// frame renders, because a standing player's pose scope was never normalized and
+        /// nothing later restores it. Skipped when the base layer is not vanilla's.
+        /// </summary>
+        private void SteerWriteDefaultsCaptureAfterRigBuild(string phase)
+        {
+            try
+            {
+                if (bodyAnimator == null || !bodyAnimator.isActiveAndEnabled)
+                    return;
+                if (!bodyAnimator.HasState(0, VanillaIdle1StateHash) ||
+                    !bodyAnimator.HasState(0, VanillaWalkStateHash))
+                {
+                    return;
+                }
+
+                AnimatorStateInfo liveState = bodyAnimator.GetCurrentAnimatorStateInfo(0);
+
+                bodyAnimator.Play(VanillaIdle1StateHash, 0, 0f);
+                bodyAnimator.Update(0f);
+                Transform metarig = SafeArmsMetarigTransform(context?.Request?.Player);
+                float idle1Y = metarig != null ? metarig.localPosition.y : float.NaN;
+                Vector3 preSentinelLocal = metarig != null ? metarig.localPosition : Vector3.zero;
+                if (metarig != null)
+                {
+                    metarig.localPosition = new Vector3(
+                        preSentinelLocal.x, CaptureProbeSentinelLocalY, preSentinelLocal.z);
+                }
+
+                bodyAnimator.Play(VanillaWalkStateHash, 0, 0f);
+                bodyAnimator.Update(0f);
+                float probeY = metarig != null ? metarig.localPosition.y : float.NaN;
+
+                bodyAnimator.Play(liveState.shortNameHash, 0, liveState.normalizedTime);
+                bodyAnimator.Update(0f);
+                if (metarig != null &&
+                    Mathf.Abs(metarig.localPosition.y - CaptureProbeSentinelLocalY) < 0.001f)
+                {
+                    metarig.localPosition = preSentinelLocal;
+                }
+
+                CaptureProbeWriteVerdict writeVerdict =
+                    RigBuildCapturePolicy.ClassifySentinelSeamProbe(
+                        probeY, CaptureProbeSentinelLocalY, idle1Y,
+                        CaptureProbeSentinelMatchToleranceMeters);
+                bool pristineAvailable = InteractionAnimationApiRestoreDiagnostics
+                    .TryGetPristineCameraChainLocalPosition(
+                        context?.Request?.Player, "playerModelArmsMetarig",
+                        out Vector3 pristineLocal, out _);
+                // Poison only means something when Walk actually wrote — under retention the
+                // reading is the sentinel, not a capture.
+                bool poisoned = writeVerdict != CaptureProbeWriteVerdict.WroteNothing &&
+                    RigBuildCapturePolicy.ProbeIndicatesPoisonedDefault(
+                        pristineAvailable, probeY, pristineLocal.y,
+                        CaptureProbePoisonToleranceMeters);
+                string verdict;
+                bool decisive;
+                switch (writeVerdict)
+                {
+                    case CaptureProbeWriteVerdict.WroteNothing:
+                        verdict = "RETENTION_walk_wrote_nothing_sentinel_survived";
+                        decisive = true;
+                        break;
+                    case CaptureProbeWriteVerdict.WroteCapturedDefault:
+                        verdict = poisoned
+                            ? "POISONED_default_capture_is_later_than_this_seam"
+                            : "walk_wrote_captured_standing_default";
+                        decisive = poisoned;
+                        break;
+                    case CaptureProbeWriteVerdict.WroteOther:
+                        verdict = poisoned
+                            ? "POISONED_walk_wrote_neither_default_nor_sentinel"
+                            : "walk_wrote_neither_default_nor_sentinel";
+                        decisive = true;
+                        break;
+                    default:
+                        verdict = "inconclusive";
+                        decisive = false;
+                        break;
+                }
+                string message =
+                    "[RestoreSeam.bindpose] write_defaults_capture_probe: " +
+                    $"frame={Time.frameCount} " +
+                    $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
+                    $"phase='{phase}' idle1WroteMetarigLocalY={idle1Y:0.####} " +
+                    $"sentinelLocalY={CaptureProbeSentinelLocalY:0.####} " +
+                    $"unkeyedWalkWroteMetarigLocalY={probeY:0.####} " +
+                    "sentinelContribution=" +
+                    $"{RigBuildCapturePolicy.SentinelContribution(probeY, CaptureProbeSentinelLocalY, idle1Y):0.###} " +
+                    $"pristineMetarigLocalY={(pristineAvailable ? pristineLocal.y.ToString("0.####") : "<unavailable>")} " +
+                    $"liveState='{DescribeBaseLayerState(liveState.shortNameHash)}' " +
+                    $"verdict='{verdict}'.";
+                if (decisive)
+                    context?.Logger?.LogWarning(message);
+                else if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+                    context?.Logger?.LogInfo(message);
+            }
+            catch (Exception exception)
+            {
+                context?.Logger?.LogInfo(
+                    "[RestoreSeam.bindpose] write_defaults_capture_steering_skipped: " +
+                    $"frame={Time.frameCount} phase='{phase}' reason='{exception.Message}'.");
+            }
         }
 
         // Swapping runtimeAnimatorController destroys the Animation Rigging playable graph,
@@ -5142,6 +5421,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             if (playerRoot == null)
                 return;
 
+            // #37: the write-defaults capture the unkeyed Base Layer states write back belongs
+            // to the rebuilt rig graph, and round 10 measured that holding the scene pose
+            // pristine across Build() alone does not steer it — the capture defers to the
+            // graph's first evaluation (see SteerWriteDefaultsCaptureAfterRigBuild, which runs
+            // that evaluation in standing Idle1 and probes the result). The pose hold is kept
+            // so whichever moment the capture reads the scene, it sees pristine standing.
+            RigBuildPoseScope poseScope = NormalizeArmsChainForRigBuild(phase);
             int rebuilt = 0;
             Behaviour[] behaviours = playerRoot.GetComponentsInChildren<Behaviour>(true);
             for (int i = 0; i < behaviours.Length; i++)
@@ -5167,6 +5453,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                         $"phase='{phase}' rigBuilder='{behaviour.name}' reason='{exception.Message}'.");
                 }
             }
+            SteerWriteDefaultsCaptureAfterRigBuild(phase);
+            RestoreArmsChainAfterRigBuild(in poseScope, phase);
 
             context?.Logger?.LogInfo(
                 "[LCInteractionAnimationAPI] live_body.rig_rebuilt: " +
@@ -5574,6 +5862,127 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             nextMidSessionSampleAtSeconds = elapsedSeconds + MidSessionSampleIntervalSeconds;
             LogMidSessionSample("tick");
+            ProbeUnkeyedWriterMidSession();
+        }
+
+        /// <summary>
+        /// #37 round 12: the seam-time probe and natural-frame behavior disagreed in round 11
+        /// (probe healthy at the seam, enforcement fighting a ~1.5x crossfade signature 72
+        /// frames later with no rebuild in between), so the write semantics must be measured
+        /// on natural frames too. Once a second, park the arms metarig on the sentinel
+        /// height, force a zero-delta re-evaluation of the animator graph, read what came
+        /// back, and put the frame's original pose back so the probe never renders. The
+        /// reading separates the candidate per-frame writers: the sentinel survives (nothing
+        /// writes this binding — retention), the standing default comes back (write-back
+        /// exists on natural frames), the frame's own value comes back (a scene-independent
+        /// per-frame writer), or something in between (a blend whose unkeyed-side term reads
+        /// the current scene value — sentinelContribution is then the blend weight).
+        /// Transition info and the fp-arms layer weight ride along so enforcement-fight
+        /// episodes name their writer. The metarig and localArms rotations are restored too:
+        /// PlayerControllerB.LateUpdate owns those writes and its order against this tick is
+        /// unspecified. Only runs while the mid-session sampler is armed (restore-seam
+        /// diagnostics on, local player), so shipping sessions never pay the extra
+        /// evaluation.
+        /// </summary>
+        private void ProbeUnkeyedWriterMidSession()
+        {
+            if (bodyAnimator == null || !bodyAnimator.isActiveAndEnabled)
+                return;
+            Transform metarig = midSessionTargets.ArmsMetarig;
+            if (metarig == null)
+                return;
+
+            try
+            {
+                AnimatorStateInfo baseState = bodyAnimator.GetCurrentAnimatorStateInfo(0);
+                bool baseInTransition = bodyAnimator.IsInTransition(0);
+                AnimatorStateInfo nextState = baseInTransition
+                    ? bodyAnimator.GetNextAnimatorStateInfo(0)
+                    : default;
+                AnimatorTransitionInfo transition = baseInTransition
+                    ? bodyAnimator.GetAnimatorTransitionInfo(0)
+                    : default;
+
+                Transform localArms = midSessionTargets.LocalArms;
+                Vector3 frameLocal = metarig.localPosition;
+                Quaternion frameLocalRotation = metarig.localRotation;
+                Vector3 localArmsFramePosition = localArms != null
+                    ? localArms.localPosition
+                    : Vector3.zero;
+                Quaternion localArmsFrameRotation = localArms != null
+                    ? localArms.localRotation
+                    : Quaternion.identity;
+
+                metarig.localPosition = new Vector3(
+                    frameLocal.x, CaptureProbeSentinelLocalY, frameLocal.z);
+                bodyAnimator.Update(0f);
+                float probeY = metarig.localPosition.y;
+
+                // The natural frame's pose stays authoritative; the probe must be invisible.
+                metarig.localPosition = frameLocal;
+                metarig.localRotation = frameLocalRotation;
+                if (localArms != null)
+                {
+                    localArms.localPosition = localArmsFramePosition;
+                    localArms.localRotation = localArmsFrameRotation;
+                }
+
+                bool pristineAvailable = InteractionAnimationApiRestoreDiagnostics
+                    .TryGetPristineCameraChainLocalPosition(
+                        midSessionTargets.Player, "playerModelArmsMetarig",
+                        out Vector3 pristineLocal, out _);
+                float standingDefaultY = pristineAvailable ? pristineLocal.y : float.NaN;
+                CaptureProbeWriteVerdict writeVerdict =
+                    RigBuildCapturePolicy.ClassifyMidSessionWriterProbe(
+                        probeY, CaptureProbeSentinelLocalY, frameLocal.y, standingDefaultY,
+                        CaptureProbeSentinelMatchToleranceMeters);
+                string verdict;
+                switch (writeVerdict)
+                {
+                    case CaptureProbeWriteVerdict.WroteNothing:
+                        verdict = "retention_eval_wrote_nothing";
+                        break;
+                    case CaptureProbeWriteVerdict.WroteCapturedDefault:
+                        verdict = "eval_wrote_standing_default";
+                        break;
+                    case CaptureProbeWriteVerdict.RewroteFrameValue:
+                        verdict = "eval_rewrote_frame_value_scene_independent";
+                        break;
+                    case CaptureProbeWriteVerdict.WroteOther:
+                        verdict = "eval_wrote_other_possible_scene_feedback";
+                        break;
+                    default:
+                        verdict = "inconclusive";
+                        break;
+                }
+
+                context?.Logger?.LogInfo(
+                    "[RestoreSeam.midsession] writer_probe: " +
+                    $"frame={Time.frameCount} " +
+                    $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
+                    $"elapsed={elapsedSeconds:0.###} " +
+                    $"baseState='{DescribeBaseLayerState(baseState.shortNameHash)}' " +
+                    $"baseNormalizedTime={baseState.normalizedTime:0.###} " +
+                    $"baseInTransition={baseInTransition} " +
+                    $"nextState='{(baseInTransition ? DescribeBaseLayerState(nextState.shortNameHash) : "<none>")}' " +
+                    $"transitionNormalizedTime={(baseInTransition ? transition.normalizedTime : 0f):0.###} " +
+                    $"transitionDuration={(baseInTransition ? transition.duration : 0f):0.###} " +
+                    $"fpArmsWeight={ReadAnimatorLayerWeight(bodyAnimator, firstPersonLayerIndex):0.###} " +
+                    $"enforcementEngaged={armsMetarigEnforcementEngaged} " +
+                    $"frameMetarigLocalY={frameLocal.y:0.####} " +
+                    $"sentinelLocalY={CaptureProbeSentinelLocalY:0.####} " +
+                    $"evalWroteMetarigLocalY={probeY:0.####} " +
+                    "sentinelContribution=" +
+                    $"{RigBuildCapturePolicy.SentinelContribution(probeY, CaptureProbeSentinelLocalY, standingDefaultY):0.###} " +
+                    $"pristineMetarigLocalY={(pristineAvailable ? pristineLocal.y.ToString("0.####") : "<unavailable>")} " +
+                    $"verdict='{verdict}'.");
+            }
+            catch (Exception exception)
+            {
+                context?.Logger?.LogInfo(
+                    "[RestoreSeam.midsession] writer_probe_skipped: " +
+                    $"frame={Time.frameCount} reason='{exception.Message}'.");
+            }
         }
 
         /// <summary>
