@@ -4,43 +4,28 @@ Last updated: 2026-09-02
 
 ## 1.0.2
 
-- Fixed dropping or picking up an item while crouched breaking the player
+- Fixed picking up or dropping an item while crouched breaking the player
   animation, camera, and movement.
-- Fixed equipping OR dropping a weapon while crouched leaving the first-person
-  arms about a meter below the camera in every walking, sprinting, strafing,
-  jumping, and falling state, and leaving movement stalling and snapping on
-  every walk start afterwards. Only the idle and crouch states author the arms
-  height, and only the walk and crouch states author the body rig's root
-  offset; the rest write back a default pose Unity captures at the first
-  natural evaluation after each controller swap, in whatever stance the player
-  held. Two per-frame owners now hold the authored standing values for those
-  states, in and out of interactions, and write nothing while the capture is
-  healthy (`Own Arms Metarig Write-Back`, `Own Metarig Root Write-Back`).
+- Fixed equipping or dropping a weapon while crouched leaving the first-person
+  arms below the camera while moving, and movement stalling and snapping on
+  every walk start afterwards.
 - Fixed the top edge of the visor clipping for one frame on every weapon
-  pickup and drop, and the camera jumping back for one frame on a crouched
-  drop: the seam repairs measured the camera against a rest position recorded
-  under the poisoned rig and against the prefab's pre-animation camera pose,
-  and the teardown camera pin then held that pose for two frames.
-- Fixed the first-person arms rendering one stale frame at the start of an
-  interaction: the start seam now applies the same arms glue as the stop seam.
-- Fixed the camera briefly jerking up and back down on a crouched drop: the
-  restored base layer now re-enters the crouch states instantly instead of
-  crossfading from the standing idle.
-- Detect duplicate installs at startup: a second `Y4NGZInteractions.dll`
-  anywhere in the plugins tree now logs a `duplicate_install_detected` error
-  naming the stale path, because consumers can bind to the skipped copy and see
-  `interaction_animation_api_not_initialized` for the whole session. The
-  `api.initialized` log line now also carries the loaded assembly's version and
-  location.
-- Fixed the teardown camera pin baking a permanent camera offset: it now holds
-  the viewpoint by moving the camera container instead of the gameplay camera's
-  world position, and restores the camera's pristine local position when it
-  releases, so a crouched drop can no longer leave the next interaction's
-  viewpoint below the floor.
+  pickup and drop.
+- Fixed the camera jumping for one frame, and briefly jerking up and back down,
+  on a crouched drop.
+- Fixed a crouched drop leaving the next interaction's viewpoint below the
+  floor.
+- Fixed the first-person arms showing one stale frame at the start of an
+  interaction.
 - Fixed crouched walking with a live-body weapon detaching the arms from the
   camera after a jump or a fall.
 - Fixed crouch-walking playing the sprint arms animation.
 - Fixed crouching sometimes playing twice during live-body interactions.
+- A second `Y4NGZInteractions.dll` anywhere in the plugins tree is now reported
+  at startup with its path, and the startup log names the loaded version and
+  location.
+- New config keys `Own Arms Metarig Write-Back` and `Own Metarig Root
+  Write-Back`, both on by default.
 
 ## 1.0.1
 
