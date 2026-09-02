@@ -3,12 +3,10 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
     /// <summary>
     /// Pure decision for normalizing the arms chain around a live-body controller swap.
     ///
-    /// Round 9 (#37) overturned the round-6/8 theory this policy was built on: the capture
-    /// that decides what the 11 unkeyed Base Layer states write back happens at the RigBuilder
-    /// graph build (see <see cref="RigBuildCapturePolicy"/>), not at the controller
-    /// assignment, so this normalization alone does not steer it. It is kept as defense in
-    /// depth: it clears teardown residue from the arms chain before the swap and holds a
-    /// pristine pose for the window between the assignment and the rig build. The live stance
+    /// Round 9 (#37) overturned the round-6/8 theory this policy was built on: this
+    /// normalization does not steer what the unkeyed Base Layer states write back (the
+    /// seam-frame fix lives in the LateUpdate write-back owners). It is kept as defense in
+    /// depth: it clears teardown residue from the arms chain before the swap. The live stance
     /// is re-posed in the same frame, so the normalization is never visible.
     /// </summary>
     internal static class ControllerSwapBindPosePolicy
