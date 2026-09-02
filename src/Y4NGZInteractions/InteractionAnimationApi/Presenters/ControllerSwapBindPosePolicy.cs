@@ -3,17 +3,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
     /// <summary>
     /// Pure decision for normalizing the arms chain around a live-body controller swap.
     ///
-    /// Assigning a controller defers Unity's write-defaults capture to the FIRST evaluation
-    /// after the assignment — measured in game (round 6): normalizing the pose before the swap
-    /// alone changed nothing, because the first evaluation was the replayed crouch state. The
-    /// working sequence is normalize, assign, then burn one zero-delta evaluation in the
-    /// controller's default standing state (the capture priming) BEFORE any stance replay. A
-    /// capture taken crouched bakes the arms chain at crouch height (metarig 1.017 instead of
-    /// the authored 2.104), and the 11 of 15 Base Layer states that do not key the metarig
-    /// (Walk, Sprint, WalkSideways, Jump, JumpLand, FallNoJump, ...) write it back — the
-    /// first-person arms render ~1.2 m below the camera whenever such a state runs, while
-    /// Idle1 (which keys the binding) looks healthy. The live stance is re-posed in the same
-    /// frame, so neither the normalization nor the priming evaluation is ever visible.
+    /// Round 9 (#37) overturned the round-6/8 theory this policy was built on: the capture
+    /// that decides what the 11 unkeyed Base Layer states write back happens at the RigBuilder
+    /// graph build (see <see cref="RigBuildCapturePolicy"/>), not at the controller
+    /// assignment, so this normalization alone does not steer it. It is kept as defense in
+    /// depth: it clears teardown residue from the arms chain before the swap and holds a
+    /// pristine pose for the window between the assignment and the rig build. The live stance
+    /// is re-posed in the same frame, so the normalization is never visible.
     /// </summary>
     internal static class ControllerSwapBindPosePolicy
     {
