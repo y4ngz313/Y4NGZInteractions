@@ -1,6 +1,6 @@
 # Manifest Reference
 
-Last updated: 2026-08-09
+Last updated: 2026-08-17
 
 New content uses strict schema version 2. Field names are exact and case-sensitive; unknown or duplicate fields are errors. Every validation issue identifies a stable code and JSON path.
 
@@ -44,6 +44,8 @@ Vectors are JSON objects with x, y, and z numbers.
 ~~~
 
 Camera position and rotation default to zero. Scale defaults to one. cameraAnchorPath and renderer paths are prefab-relative canonical transform paths.
+
+hideVanillaFirstPersonArms hides the player's first-person arms for the session and restores their previous enabled state on stop. When ModelReplacementAPI is installed and the player wears a replacement model, it also hides that model's replacement viewmodel, which otherwise keeps rendering in parallel and occludes this payload. ModelReplacementAPI stays an optional soft dependency; with it absent the flag behaves exactly as before.
 
 ## BodyWorld
 
