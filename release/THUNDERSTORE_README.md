@@ -18,8 +18,7 @@ Y4NGZ Interactions is a shared animation and item-presentation library used by
 other Y4NGZ mods. It adds nothing on its own. Your mod manager installs it when a
 package needs it.
 
-Mod authors: the API and examples are documented in the
-[repository README](https://github.com/y4ngz313/Y4NGZInteractions).
+Mod authors: the API and examples are documented in the repository README.
 
 Code and original example assets are licensed under the MIT License.
 
@@ -39,6 +38,10 @@ Your mod manager installs Y4NGZ Interactions automatically when a package that r
 | **Better Armory** | Required. Weapon and grenade animations. |
 | **LethalCCTV** | Required. Camera operator animations. |
 | **Contracted** | Optional. Pest Control lever and Bundy finisher animations. |
+
+## GitHub
+
+Source code: https://github.com/y4ngz313/Y4NGZInteractions
 
 ## Bugs
 
