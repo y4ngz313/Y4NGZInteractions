@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using BepInEx;
+using BepInEx.Bootstrap;
 using BepInEx.Logging;
 using UnityEngine;
 using Y4NGZInteractions.InteractionAnimationApi.Authoring;
@@ -14,6 +15,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
     internal sealed class LocalViewmodelPresenter : IInteractionPresenter
     {
         private const long SynchronousLoadSizeLimitBytes = 16L * 1024L * 1024L;
+
+        // ModelReplacementAPI is a soft, optional dependency. It is never referenced at compile
+        // time and never required at runtime; these names are the whole contract with it.
+        private const string ModelReplacementApiGuid = "meow.ModelReplacementAPI";
+        private const string BodyReplacementBaseTypeName = "ModelReplacement.BodyReplacementBase";
+        private const string ReplacementViewModelFieldName = "replacementViewModel";
+
         private static readonly HashSet<string> PreloadingBundlePaths =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private static readonly Dictionary<string, AssetBundle> PreloadedBundles =
@@ -165,6 +173,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             }
 
             HideLiveFirstPersonRenderers();
+            HideModelReplacementViewmodelRenderers();
             active = true;
             exitRequested = false;
             SetBoolIfExists(manifest.localViewmodel.activeBool, true);
@@ -813,6 +822,101 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             context.Logger?.LogInfo(
                 "[LCInteractionAnimationAPI] local_viewmodel.renderer_hidden: " +
                 $"handle={context.Handle} renderer='{renderer.name}'.");
+        }
+
+        // ModelReplacementAPI hides the vanilla arms by layer rather than by renderer, and in the
+        // same pass shows its own replacement viewmodel in their place, then drives that viewmodel
+        // from the vanilla rig every frame. The vanilla rig is not posed to the animation this
+        // presenter is playing, so the replacement parks a static hand in front of the camera and
+        // occludes the viewmodel we just instantiated. Hide it by renderer for the duration of the
+        // session; verified against ModelReplacementAPI 2.4.20, SetArmLayers writes only
+        // gameObject.layer and shadowCastingMode, and the sole SetAvatarRenderers(true) call runs
+        // once from Awake, so nothing re-enables these renderers behind us.
+        //
+        // Captured into the same hiddenRenderers list as the vanilla arms, so Stop restores both.
+        private void HideModelReplacementViewmodelRenderers()
+        {
+            if (context?.Request?.Player == null || context.Manifest == null)
+                return;
+
+            // Only claim the arms in the cases where we already claim the vanilla ones.
+            if (!context.Manifest.localViewmodel.hideVanillaFirstPersonArms)
+                return;
+
+            if (!Chainloader.PluginInfos.ContainsKey(ModelReplacementApiGuid))
+                return;
+
+            try
+            {
+                GameObject replacementViewModel =
+                    FindModelReplacementViewmodel(context.Request.Player);
+                if (replacementViewModel == null)
+                    return;
+
+                int hidden = 0;
+                Renderer[] renderers = replacementViewModel.GetComponentsInChildren<Renderer>(true);
+                for (int i = 0; i < renderers.Length; i++)
+                {
+                    Renderer renderer = renderers[i];
+                    if (renderer == null)
+                        continue;
+
+                    hiddenRenderers.Add(RendererState.Capture(renderer));
+                    renderer.enabled = false;
+                    hidden++;
+                }
+
+                context.Logger?.LogInfo(
+                    "[LCInteractionAnimationAPI] local_viewmodel.model_replacement_hidden: " +
+                    $"handle={context.Handle} viewModel='{replacementViewModel.name}' " +
+                    $"renderers={hidden}.");
+            }
+            catch (Exception exception)
+            {
+                context.Logger?.LogWarning(
+                    "[LCInteractionAnimationAPI] local_viewmodel.model_replacement_hide_failed: " +
+                    $"handle={context.Handle} reason='{exception.Message}'.");
+            }
+        }
+
+        // ModelReplacementAPI adds its body replacement straight to the player object, and the
+        // component is always a subclass of BodyReplacementBase, so walk the base chain by name
+        // instead of binding to the assembly.
+        private static GameObject FindModelReplacementViewmodel(Component player)
+        {
+            MonoBehaviour[] behaviours = player.GetComponents<MonoBehaviour>();
+            for (int i = 0; i < behaviours.Length; i++)
+            {
+                MonoBehaviour behaviour = behaviours[i];
+                if (behaviour == null || !IsBodyReplacementComponent(behaviour))
+                    continue;
+
+                System.Reflection.FieldInfo field = behaviour.GetType().GetField(
+                    ReplacementViewModelFieldName,
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
+                if (field == null || !typeof(GameObject).IsAssignableFrom(field.FieldType))
+                    continue;
+
+                // The second test is Unity's null operator: it also rejects a destroyed object.
+                if (field.GetValue(behaviour) is GameObject viewModel && viewModel != null)
+                    return viewModel;
+            }
+
+            return null;
+        }
+
+        private static bool IsBodyReplacementComponent(Component component)
+        {
+            Type type = component != null ? component.GetType() : null;
+            while (type != null)
+            {
+                if (string.Equals(type.FullName, BodyReplacementBaseTypeName, StringComparison.Ordinal))
+                    return true;
+
+                type = type.BaseType;
+            }
+
+            return false;
         }
 
         private void RestoreLiveFirstPersonRenderers()
