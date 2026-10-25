@@ -425,6 +425,11 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             this.context = context;
             bodyAnimator = context.Request.Player.playerBodyAnimator;
+            // #660: An external camera/visor owner supersedes any outgoing restore pin's visor
+            // follow. First-person successors keep it: the pin still moves the camera for its
+            // remaining LateUpdates and the follow reads the live target point.
+            if (LocalCameraOwnedExternally && IsLocalPlayer(context.Request.Player))
+                LocalCameraPositionStabilizer.RelinquishVisorFollows();
             // A new session supersedes any empty-hands watch still running from the last Stop.
             DisarmPostSessionWatcher();
             // This must be the first session-state capture: the guard reference represents the
@@ -1377,6 +1382,16 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     stabilizer.ApplyNow();
                 if (deferRelease)
                 {
+                    if (TryResolveSeamVisorFollow(player, out Transform visor, out Transform target))
+                    {
+                        stabilizer.FollowVisorAfterCameraWrites(
+                            visor,
+                            target,
+                            InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled
+                                ? pinReleaseLogger
+                                : null,
+                            pinReleaseHandle);
+                    }
                     // The deferred window is the one stretch of teardown the residue tripwire did
                     // not cover: it runs inside the camera-chain snap, while these LateUpdates
                     // happen after Stop returns. Close the loop at the pin's final release.
@@ -1419,6 +1434,59 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 pinReleaseLogger = null;
                 pinReleaseHandle = null;
             }
+        }
+
+        private bool TryResolveSeamVisorFollow(
+            GameNetcodeStuff.PlayerControllerB player,
+            out Transform visor,
+            out Transform target)
+        {
+            visor = null;
+            target = null;
+            if (player == null || !IsLocalPlayer(player) || LocalCameraOwnedExternally ||
+                !InteractionAnimationApiRestoreDiagnostics.RestoreVisorPoseEnabled)
+            {
+                return false;
+            }
+
+            try
+            {
+                visor = player.localVisor;
+                target = player.localVisorTargetPoint;
+                return visor != null && target != null;
+            }
+            catch
+            {
+                visor = null;
+                target = null;
+                return false;
+            }
+        }
+
+        private void GlueSeamVisorToFinalCameraPose(
+            GameNetcodeStuff.PlayerControllerB player,
+            string step)
+        {
+            if (!TryResolveSeamVisorFollow(player, out Transform visor, out Transform target))
+                return;
+
+            try
+            {
+                Vector3 targetPosition = target.position;
+                float distance = Vector3.Distance(visor.position, targetPosition);
+                if (!CameraPinReleasePolicy.ShouldGlueVisor(distance))
+                    return;
+
+                visor.position = targetPosition;
+                if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+                {
+                    SeamLogger?.LogInfo(
+                        "[RestoreSeam.visor] follow: " +
+                        $"frame={Time.frameCount} handle={SeamHandle} step='{step}' " +
+                        $"correction={distance:0.####}m.");
+                }
+            }
+            catch { }
         }
 
         private CameraRotationSnapshot CaptureSeamCameraRotation(string phase)
@@ -4337,9 +4405,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 bodyAnimator,
                 "after_build");
             double rigBuildMs = LapMilliseconds(seamTiming);
-            // Vanilla normally applies this glue later in PlayerControllerB.LateUpdate. Stop can
-            // run after that callback, so reproduce it synchronously before the final animator
-            // and rig evaluations to keep the rendered restore frame continuous.
+            // #660: Restore seam poses here; final visor position glue follows the pin below.
             ReapplySeamCameraRotation(stopCameraRotation, "stop", animatorRestored);
             ReapplySeamVisorPose(stopVisorPose, "stop", animatorRestored);
             if (animatorRestored)
@@ -4381,6 +4447,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             // controller-restore frame exposed one small viewpoint snap while the vanilla camera
             // parent settled on the following frame.
             StopLocalCameraPositionStabilizer(restorePosition: true, deferRelease: true);
+            // #660: Last transform write of Stop: the earlier visor restore preceded the chain
+            // snap, evaluations and pin, and Stop entry removed the active onBeforeRender glue.
+            GlueSeamVisorToFinalCameraPose(player, "stop_final");
             InteractionAnimationApiRestoreDiagnostics.NotifyRestoreCompleted(player);
             ReleaseBundle(retainOwnedBundles: stopReason != InteractionAnimationStopReason.Shutdown);
             double cleanupMs = LapMilliseconds(seamTiming);
@@ -6319,12 +6388,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             }
         }
 
-        // A visor farther than this from its camera target point was parked away
-        // from the camera by a consumer (the standard hide idiom, e.g. a
-        // notSpawnedPosition or down-5000 park) — never snap a parked visor
-        // back into frame.
-        private const float VisorHardGlueMaxTrackDistanceMeters = 2f;
-
         /// <summary>
         /// Visor parity (2026-07-22): vanilla glues localVisor to
         /// localVisorTargetPoint (a child of the gameplay camera) every owner
@@ -6409,7 +6472,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 Vector3 targetPosition = visorHardGlueTarget.position;
                 float positionDelta =
                     Vector3.Distance(visorHardGlueVisor.position, targetPosition);
-                if (positionDelta > VisorHardGlueMaxTrackDistanceMeters)
+                if (!CameraPinReleasePolicy.ShouldGlueVisor(positionDelta))
                 {
                     if (!visorHardGlueParkedLogged)
                     {
@@ -7324,6 +7387,15 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         // container from its clips on the next frame, so the write is transient by construction.
         private Transform cameraContainer;
         private Action releaseCallback;
+        private Transform followedVisor;
+        private Transform followedVisorTarget;
+        private ManualLogSource followLogger;
+        private string followHandle;
+        private bool followParkedLogged;
+        private int followEpoch;
+        // #660: Bumped by RelinquishVisorFollows; a follow armed under an older epoch stops
+        // writing the visor. Static because the superseding session runs on another presenter.
+        private static int visorFollowEpoch;
 
         internal void Initialize(
             Transform playerRoot,
@@ -7338,6 +7410,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             cameraContainer = null;
             releaseCallback = null;
             releaseLateUpdates = -1;
+            ClearVisorFollow();
             ApplyNow();
         }
 
@@ -7369,6 +7442,37 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             releaseCallback = callback;
         }
 
+        internal void FollowVisorAfterCameraWrites(
+            Transform visor,
+            Transform visorTarget,
+            ManualLogSource seamLogger,
+            string handle)
+        {
+            followedVisor = visor;
+            followedVisorTarget = visorTarget;
+            followLogger = seamLogger;
+            followHandle = handle;
+            followParkedLogged = false;
+            followEpoch = visorFollowEpoch;
+        }
+
+        /// <summary>
+        /// #660: Ends every armed visor follow at its next glue; the pins keep holding the camera.
+        /// </summary>
+        internal static void RelinquishVisorFollows()
+        {
+            unchecked { visorFollowEpoch++; }
+        }
+
+        private void ClearVisorFollow()
+        {
+            followedVisor = null;
+            followedVisorTarget = null;
+            followLogger = null;
+            followHandle = null;
+            followParkedLogged = false;
+        }
+
         internal void InitializeStanceRelative(
             Transform playerRoot,
             Transform cameraTransform,
@@ -7390,6 +7494,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             cameraContainer = null;
             releaseCallback = null;
             releaseLateUpdates = -1;
+            ClearVisorFollow();
             ApplyNow();
         }
 
@@ -7455,20 +7560,80 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             cameraTransform.position = targetWorld;
         }
 
+        private void GlueFollowedVisor(string step)
+        {
+            try
+            {
+                if (followedVisor == null || followedVisorTarget == null)
+                    return;
+
+                if (followEpoch != visorFollowEpoch ||
+                    !InteractionAnimationApiRestoreDiagnostics.RestoreVisorPoseEnabled)
+                {
+                    ClearVisorFollow();
+                    return;
+                }
+
+                Vector3 targetPosition = followedVisorTarget.position;
+                float distance = Vector3.Distance(followedVisor.position, targetPosition);
+                if (!CameraPinReleasePolicy.ShouldGlueVisor(distance))
+                {
+                    if (!followParkedLogged && followLogger != null &&
+                        InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+                    {
+                        followParkedLogged = true;
+                        followLogger.LogInfo(
+                            "[RestoreSeam.visor] follow_skipped: " +
+                            $"frame={Time.frameCount} handle={followHandle} step='{step}' " +
+                            $"reason='parked' distance={distance:0.####}m.");
+                    }
+                    return;
+                }
+
+                followedVisor.position = targetPosition;
+                if (followLogger != null &&
+                    InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+                {
+                    followLogger.LogInfo(
+                        "[RestoreSeam.visor] follow: " +
+                        $"frame={Time.frameCount} handle={followHandle} step='{step}' " +
+                        $"correction={distance:0.####}m.");
+                }
+            }
+            catch { }
+        }
+
         private void LateUpdate()
         {
-            ApplyNow();
-            CameraPinReleaseStep step = CameraPinReleasePolicy.AdvanceRelease(releaseLateUpdates);
-            releaseLateUpdates = step.RemainingLateUpdates;
-            if (!step.ReleaseNow)
-                return;
-
-            Action callback = releaseCallback;
-            releaseCallback = null;
-            enabled = false;
-            try { callback?.Invoke(); }
-            catch { }
-            UnityEngine.Object.Destroy(this);
+            CameraPinReleaseStep release = CameraPinReleasePolicy.AdvanceRelease(releaseLateUpdates);
+            releaseLateUpdates = release.RemainingLateUpdates;
+            IReadOnlyList<CameraPinLateUpdateStep> steps =
+                CameraPinReleasePolicy.LateUpdateSteps(release.ReleaseNow);
+            for (int i = 0; i < steps.Count; i++)
+            {
+                switch (steps[i])
+                {
+                    case CameraPinLateUpdateStep.HoldViewpoint:
+                        ApplyNow();
+                        break;
+                    case CameraPinLateUpdateStep.RunReleaseCallback:
+                    {
+                        Action callback = releaseCallback;
+                        releaseCallback = null;
+                        enabled = false;
+                        try { callback?.Invoke(); }
+                        catch { }
+                        break;
+                    }
+                    case CameraPinLateUpdateStep.GlueVisorToCamera:
+                        GlueFollowedVisor(release.ReleaseNow ? "pin_release" : "pin_hold");
+                        break;
+                    case CameraPinLateUpdateStep.DestroyPin:
+                        ClearVisorFollow();
+                        UnityEngine.Object.Destroy(this);
+                        break;
+                }
+            }
         }
     }
 
