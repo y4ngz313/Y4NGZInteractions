@@ -2,6 +2,11 @@
 
 Last updated: 2026-09-02
 
+## Unreleased
+
+- Fixed a player's knee staying bent backwards after a live-body interaction
+  ended mid-stride (the rig now re-captures vanilla's leg bind pose).
+
 ## 1.0.2
 
 - Fixed picking up or dropping an item while crouched breaking the player

@@ -5156,6 +5156,12 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             context?.Logger?.LogInfo(
                 "[LCInteractionAnimationAPI] live_body.rig_rebuilt: " +
                 $"handle={(context != null ? context.Handle.ToString() : "<none>")} phase='{phase}' rigBuilders={rebuilt}.");
+
+            // #660: the rebuilt rig captures the stream-only shin write-defaults at the next
+            // natural animation pass, not at the seam's forced Update(0)/Evaluate; put the
+            // authored rest shin rotation back right before that pass (one-shot per rebuild).
+            if (rebuilt > 0)
+                LegBindPoseNormalizer.Schedule(context?.Request?.Player, phase, context?.Logger);
         }
 
         private void EvaluateRigBuilders(string phase)

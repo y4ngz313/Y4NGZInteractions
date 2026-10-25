@@ -44,6 +44,10 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             "UnityEngine.Animations.Rigging.ChainIKConstraint";
         private const string RigTypeName = "UnityEngine.Animations.Rigging.Rig";
         private const string RigBuilderTypeName = "UnityEngine.Animations.Rigging.RigBuilder";
+        // Third-person shin pole-seed paths: the snapshot keys and the vanilla-rest table share
+        // these so the #660 leg bind-pose fallback resolves the same rest rotations.
+        private const string ShinLeftRestPath = "spine/thigh.L/shin.L";
+        private const string ShinRightRestPath = "spine/thigh.R/shin.R";
 
         private static readonly RestoreFrameSample[] RestoreHistory =
         {
@@ -62,6 +66,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         private static ConfigEntry<bool> restoreThirdPersonRigControlPose;
         private static ConfigEntry<bool> restorePristineThirdPersonRigControlPose;
         private static ConfigEntry<bool> recaptureImplausiblePristineRigBaseline;
+        private static ConfigEntry<bool> normalizeLegBindPoseAfterRigRebuild;
         private static ConfigEntry<bool> restoreVanillaArmsGlue;
         private static ConfigEntry<bool> restoreCameraPin;
         private static ConfigEntry<bool> restoreCameraRotation;
@@ -184,6 +189,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         internal static bool RecaptureImplausiblePristineRigBaselineEnabled =>
             initialized && ReadEnabled(recaptureImplausiblePristineRigBaseline, true);
 
+        internal static bool NormalizeLegBindPoseAfterRigRebuildEnabled =>
+            initialized && ReadEnabled(normalizeLegBindPoseAfterRigRebuild, true);
+
         internal static bool IkBakeProbeEnabled =>
             initialized && ReadEnabled(enableIkBakeProbe, true);
 
@@ -284,6 +292,11 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     "Recapture Implausible Pristine Rig Baseline",
                     true,
                     "When enabled, a third-person rig baseline captured at PlayerControllerB.Awake that the vanilla-rest sanity check flagged implausible is replaced by a fresh capture taken at the first verified-clean idle session entry (standing, not in a special animation, near-zero horizontal speed, camera at vanilla rest). The recapture runs only for the local player and only through the session-entry camera-drift heal, so it requires Heal Camera Drift At Session Start to be enabled and does not repair remote players' baselines (their Stops keep restoring the Awake-time capture). This is a new key so existing profiles receive the default-on fix.");
+                normalizeLegBindPoseAfterRigRebuild = config.Bind(
+                    ConfigSection,
+                    "Normalize Leg Bind Pose After Rig Rebuild",
+                    true,
+                    "When enabled, every live-body RigBuilder rebuild (session start and restore) puts the authored rest rotation back on the third-person shin.L and shin.R once, right before the next animation pass, so the rebuilt leg rig captures vanilla's knee bend. Unity captures those stream-only bones' defaults at that pass from whatever the shin holds; an interaction ending mid-stride left a straight leg there, and the knee then bent backwards in every animation until the next rebuild (#660). One write per rebuild, never per frame. This is a new key so existing profiles receive the default-on fix.");
                 restoreVanillaArmsGlue = config.Bind(
                     ConfigSection,
                     "Restore Vanilla Arms Glue",
@@ -382,6 +395,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 ReadEnabled(restoreThirdPersonRigControlPose, true);
             bool pristineThirdPersonRigControlPoseEnabled =
                 ReadEnabled(restorePristineThirdPersonRigControlPose, true);
+            bool legBindPoseNormalizationEnabled =
+                ReadEnabled(normalizeLegBindPoseAfterRigRebuild, true);
             bool vanillaArmsGlueEnabled = ReadEnabled(restoreVanillaArmsGlue, true);
             bool cameraPinEnabled = ReadEnabled(restoreCameraPin, true);
             bool cameraRotationEnabled = ReadEnabled(restoreCameraRotation, true);
@@ -428,6 +443,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 rigControlPoseEnabled || pristineRigControlPoseEnabled ||
                 thirdPersonRigControlPoseEnabled ||
                 pristineThirdPersonRigControlPoseEnabled ||
+                legBindPoseNormalizationEnabled ||
                 vanillaArmsGlueEnabled || cameraPinEnabled || cameraRotationEnabled ||
                 stabilizeCameraRotationDuringSessionEnabled ||
                 cameraRotationSnapToRestEnabled ||
@@ -445,6 +461,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     $"restorePristineRigControlPose={pristineRigControlPoseEnabled} " +
                     $"restoreThirdPersonRigControlPose={thirdPersonRigControlPoseEnabled} " +
                     $"restorePristineThirdPersonRigControlPose={pristineThirdPersonRigControlPoseEnabled} " +
+                    $"normalizeLegBindPoseAfterRigRebuild={legBindPoseNormalizationEnabled} " +
                     $"restoreVanillaArmsGlue={vanillaArmsGlueEnabled} " +
                     $"restoreCameraPin={cameraPinEnabled} " +
                     $"restoreCameraRotation={cameraRotationEnabled} " +
@@ -522,6 +539,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             restoreThirdPersonRigControlPose = null;
             restorePristineThirdPersonRigControlPose = null;
             recaptureImplausiblePristineRigBaseline = null;
+            normalizeLegBindPoseAfterRigRebuild = null;
             restoreVanillaArmsGlue = null;
             restoreCameraPin = null;
             restoreCameraRotation = null;
@@ -744,6 +762,92 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 restoredTransforms.Clear();
                 return false;
             }
+        }
+
+        /// <summary>
+        /// #660: puts the authored rest local rotation back on the player's third-person
+        /// shin.L/shin.R pole-seed bones, rotation only. The player's pristine third-person rig
+        /// baseline is the primary source (its rotation-only entries are exactly the two shins);
+        /// without one, the measured vanilla rest rotations are applied to the shins resolved
+        /// under the body animator. Never throws: failures come back as <paramref name="reason"/>.
+        /// </summary>
+        internal static bool TryRestorePristineShinRotations(
+            PlayerControllerB player,
+            out int restored,
+            out string source,
+            out string reason)
+        {
+            restored = 0;
+            source = "<none>";
+            reason = "<none>";
+            if (!NormalizeLegBindPoseAfterRigRebuildEnabled)
+            {
+                reason = "kill_switch_disabled";
+                return false;
+            }
+
+            if (player == null)
+            {
+                reason = "player_missing";
+                return false;
+            }
+
+            try
+            {
+                if (PristineThirdPersonRigPoses.TryGetValue(
+                        player,
+                        out ThirdPersonRigPoseSnapshot pristinePose) &&
+                    pristinePose != null)
+                {
+                    source = "pristine_baseline";
+                    restored = pristinePose.RestoreRotationOnly();
+                    if (restored > 0)
+                        return true;
+                }
+
+                source = "vanilla_rest";
+                Animator bodyAnimator = player.playerBodyAnimator;
+                Transform animatorRoot = bodyAnimator != null ? bodyAnimator.transform : null;
+                if (animatorRoot == null)
+                {
+                    reason = "body_animator_missing";
+                    return false;
+                }
+
+                restored =
+                    ApplyVanillaRestShinRotation(
+                        FindChildRecursive(animatorRoot, "shin.L"),
+                        ShinLeftRestPath) +
+                    ApplyVanillaRestShinRotation(
+                        FindChildRecursive(animatorRoot, "shin.R"),
+                        ShinRightRestPath);
+                if (restored > 0)
+                    return true;
+
+                reason = "shin_transforms_missing";
+                return false;
+            }
+            catch (Exception exception)
+            {
+                reason = "restore_failed:" + SanitizeLogValue(exception.Message);
+                return false;
+            }
+        }
+
+        private static int ApplyVanillaRestShinRotation(Transform shin, string path)
+        {
+            if (shin == null ||
+                !ThirdPersonRigPoseBaseline.TryGetExpectedVanillaRest(
+                    path,
+                    out _,
+                    out Quaternion localRotation,
+                    out _))
+            {
+                return 0;
+            }
+
+            shin.localRotation = localRotation;
+            return 1;
         }
 
         /// <summary>
@@ -3027,7 +3131,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             return value.ToString("R", CultureInfo.InvariantCulture);
         }
 
-        private static string DescribePlayer(PlayerControllerB player)
+        internal static string DescribePlayer(PlayerControllerB player)
         {
             if (player == null)
                 return "<null>";
@@ -3393,13 +3497,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     missing);
                 AddRotationOnly(
                     FindChildRecursive(animatorRoot, "shin.L"),
-                    "spine/thigh.L/shin.L",
+                    ShinLeftRestPath,
                     captured,
                     capturedTransforms,
                     missing);
                 AddRotationOnly(
                     FindChildRecursive(animatorRoot, "shin.R"),
-                    "spine/thigh.R/shin.R",
+                    ShinRightRestPath,
                     captured,
                     capturedTransforms,
                     missing);
@@ -3608,6 +3712,23 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                         fullPoseRestored++;
                 }
             }
+
+            /// <summary>
+            /// #660: restores only the rotation-only baselines (the shin.L/shin.R pole seeds) and
+            /// leaves every full-pose control untouched. Returns how many were written.
+            /// </summary>
+            internal int RestoreRotationOnly()
+            {
+                int restored = 0;
+                for (int i = 0; i < baselines.Length; i++)
+                {
+                    ThirdPersonRigPoseBaseline baseline = baselines[i];
+                    if (baseline.RotationOnly && baseline.Restore())
+                        restored++;
+                }
+
+                return restored;
+            }
         }
 
         private sealed class ThirdPersonRigPoseBaseline
@@ -3662,7 +3783,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 return true;
             }
 
-            private static bool TryGetExpectedVanillaRest(
+            internal static bool TryGetExpectedVanillaRest(
                 string path,
                 out Vector3 localPosition,
                 out Quaternion localRotation,
@@ -3703,11 +3824,11 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                         localRotation =
                             new Quaternion(0.89385664f, 0.00000039951823f, -0.00000006130153f, 0.44835275f);
                         return true;
-                    case "spine/thigh.L/shin.L":
+                    case ShinLeftRestPath:
                         localRotation =
                             new Quaternion(0.036354546f, -0.0022051183f, -0.008516384f, 0.99930024f);
                         return true;
-                    case "spine/thigh.R/shin.R":
+                    case ShinRightRestPath:
                         localRotation =
                             new Quaternion(0.036352716f, 0.002243982f, 0.008508066f, 0.9993003f);
                         return true;
