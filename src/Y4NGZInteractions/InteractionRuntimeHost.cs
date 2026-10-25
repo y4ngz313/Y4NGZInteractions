@@ -50,6 +50,19 @@ namespace Y4NGZInteractions
                     "[RestoreSeam.metarigroot] early_runner_failed: " + exception.Message +
                     " (the late host pass still runs).");
             }
+
+            // #660: drains the one-shot leg bind-pose normalization right before the animation
+            // pass that follows a live-body rig rebuild (see PreAnimationPassRunner).
+            try
+            {
+                gameObject.AddComponent<PreAnimationPassRunner>();
+            }
+            catch (Exception exception)
+            {
+                log?.LogWarning(
+                    "[RestoreSeam.legbind] pre_animation_runner_failed: " + exception.Message +
+                    " (rebuilt leg rigs keep the shin pose the rebuild left).");
+            }
         }
 
         private void LateUpdate()
@@ -123,6 +136,10 @@ namespace Y4NGZInteractions
             {
                 log?.LogWarning($"{Plugin.Name} shutdown warning: {exception.Message}");
             }
+
+            // After the API shutdown: its stops rebuild rigs and schedule normalizations that
+            // no frame will drain.
+            LegBindPoseNormalizer.Clear();
 
             harmony?.UnpatchSelf();
         }
