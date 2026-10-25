@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Xunit;
 using Y4NGZInteractions.InteractionAnimationApi.Presenters;
 
@@ -67,5 +68,64 @@ public sealed class CameraPinReleasePolicyTests
             hasContainer,
             containerIsCamera,
             cameraIsChildOfContainer));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void VisorGlueRunsExactlyOnceAfterEveryCameraWrite(bool releaseNow)
+    {
+        IReadOnlyList<CameraPinLateUpdateStep> steps =
+            CameraPinReleasePolicy.LateUpdateSteps(releaseNow);
+        int glueIndex = -1;
+        int glueCount = 0;
+        for (int i = 0; i < steps.Count; i++)
+        {
+            if (steps[i] == CameraPinLateUpdateStep.GlueVisorToCamera)
+            {
+                glueIndex = i;
+                glueCount++;
+            }
+        }
+
+        Assert.Equal(1, glueCount);
+        for (int i = 0; i < steps.Count; i++)
+        {
+            if (CameraPinReleasePolicy.MovesCamera(steps[i]))
+                Assert.True(i < glueIndex, $"{steps[i]} must precede visor glue.");
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ReleaseCallbackAndDestructionOnlyRunOnTheReleaseLateUpdate(bool releaseNow)
+    {
+        IReadOnlyList<CameraPinLateUpdateStep> steps =
+            CameraPinReleasePolicy.LateUpdateSteps(releaseNow);
+        if (releaseNow)
+        {
+            Assert.Single(steps, step => step == CameraPinLateUpdateStep.RunReleaseCallback);
+            Assert.Equal(CameraPinLateUpdateStep.DestroyPin, steps[steps.Count - 1]);
+        }
+        else
+        {
+            Assert.DoesNotContain(CameraPinLateUpdateStep.RunReleaseCallback, steps);
+            Assert.DoesNotContain(CameraPinLateUpdateStep.DestroyPin, steps);
+        }
+    }
+
+    [Theory]
+    [InlineData(0f, true)]
+    [InlineData(2f, true)]
+    [InlineData(2.0001f, false)]
+    [InlineData(float.NaN, false)]
+    [InlineData(float.PositiveInfinity, false)]
+    [InlineData(float.NegativeInfinity, false)]
+    public void VisorGlueOnlyTracksFiniteDistancesWithinTheParkedBoundary(
+        float distanceMeters,
+        bool expected)
+    {
+        Assert.Equal(expected, CameraPinReleasePolicy.ShouldGlueVisor(distanceMeters));
     }
 }

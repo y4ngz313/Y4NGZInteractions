@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 {
@@ -20,6 +21,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         internal bool ReleaseNow { get; }
     }
 
+    internal enum CameraPinLateUpdateStep
+    {
+        HoldViewpoint,
+        RunReleaseCallback,
+        GlueVisorToCamera,
+        DestroyPin
+    }
+
     /// <summary>
     /// Pure decisions for the restore-scoped camera pin's write target and release.
     ///
@@ -38,6 +47,48 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         /// frame exposed a one-frame viewpoint snap while the vanilla camera parent settled.
         /// </summary>
         internal const int DeferredReleaseLateUpdates = 2;
+
+        // #660: A visor farther than this from its camera target point was parked away
+        // from the camera by a consumer (the standard hide idiom, e.g. a
+        // notSpawnedPosition or down-5000 park) — never snap a parked visor
+        // back into frame.
+        internal const float VisorMaxTrackDistanceMeters = 2f;
+
+        private static readonly CameraPinLateUpdateStep[] HoldingLateUpdateSteps =
+        {
+            CameraPinLateUpdateStep.HoldViewpoint,
+            CameraPinLateUpdateStep.GlueVisorToCamera
+        };
+
+        private static readonly CameraPinLateUpdateStep[] ReleasingLateUpdateSteps =
+        {
+            CameraPinLateUpdateStep.HoldViewpoint,
+            CameraPinLateUpdateStep.RunReleaseCallback,
+            CameraPinLateUpdateStep.GlueVisorToCamera,
+            CameraPinLateUpdateStep.DestroyPin
+        };
+
+        internal static bool ShouldGlueVisor(float visorToTargetDistanceMeters)
+        {
+            return !float.IsNaN(visorToTargetDistanceMeters) &&
+                !float.IsInfinity(visorToTargetDistanceMeters) &&
+                visorToTargetDistanceMeters <= VisorMaxTrackDistanceMeters;
+        }
+
+        /// <summary>
+        /// #660: Visor glue must be the last transform write before render because vanilla
+        /// already glued the visor earlier in its own LateUpdate.
+        /// </summary>
+        internal static IReadOnlyList<CameraPinLateUpdateStep> LateUpdateSteps(bool releaseNow)
+        {
+            return releaseNow ? ReleasingLateUpdateSteps : HoldingLateUpdateSteps;
+        }
+
+        internal static bool MovesCamera(CameraPinLateUpdateStep step)
+        {
+            return step == CameraPinLateUpdateStep.HoldViewpoint ||
+                step == CameraPinLateUpdateStep.RunReleaseCallback;
+        }
 
         /// <summary>
         /// Normalizes a requested deferred-release length. A release is always at least one
