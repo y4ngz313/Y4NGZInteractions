@@ -97,21 +97,31 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             string drain = physicsStep ? "fixed_update" : "update";
             try
             {
-                if (entry.Player == null)
+                bool playerPresent = !(entry.Player == null);
+                bool animatorActive = false;
+                bool animatePhysics = false;
+                if (playerPresent)
                 {
-                    LogSkipped(logger, entry, frame, drain, 0, "<none>", "player_missing");
-                    return true;
+                    Animator animator = entry.Player.playerBodyAnimator;
+                    animatorActive = !(animator == null || !animator.isActiveAndEnabled);
+                    animatePhysics = animatorActive &&
+                        animator.updateMode == AnimatorUpdateMode.AnimatePhysics;
                 }
 
-                Animator animator = entry.Player.playerBodyAnimator;
-                if (animator == null || !animator.isActiveAndEnabled)
+                switch (LegBindPoseDrainPolicy.Decide(
+                    playerPresent, animatorActive, animatePhysics, physicsStep))
                 {
-                    LogSkipped(logger, entry, frame, drain, 0, "<none>", "animator_inactive");
-                    return true;
+                    case LegBindPoseDrainAction.DropPlayerMissing:
+                        LogSkipped(logger, entry, frame, drain, 0, "<none>", "player_missing");
+                        return true;
+                    case LegBindPoseDrainAction.DropAnimatorInactive:
+                        LogSkipped(logger, entry, frame, drain, 0, "<none>", "animator_inactive");
+                        return true;
+                    case LegBindPoseDrainAction.KeepPending:
+                        return false;
+                    case LegBindPoseDrainAction.Normalize:
+                        break;
                 }
-
-                if (animator.updateMode == AnimatorUpdateMode.AnimatePhysics && !physicsStep)
-                    return false;
 
                 bool normalized =
                     InteractionAnimationApiRestoreDiagnostics.TryRestorePristineShinRotations(
