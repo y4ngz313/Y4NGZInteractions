@@ -30,6 +30,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         private readonly Dictionary<InteractionAnimationHandle, InteractionAnimationSession>
             activeSessions =
                 new Dictionary<InteractionAnimationHandle, InteractionAnimationSession>();
+        private readonly List<InteractionAnimationHandle> tickHandleBuffer =
+            new List<InteractionAnimationHandle>();
         private readonly InteractionAnimationResourceLeaseRegistry leases =
             new InteractionAnimationResourceLeaseRegistry();
 
@@ -262,14 +264,25 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         {
             if (activeSessions.Count == 0)
                 return;
-            InteractionAnimationHandle[] handles = activeSessions.Keys.ToArray();
-            for (int i = 0; i < handles.Length; i++)
+            // Not re-entrant: Tick is only called from InteractionRuntimeHost.LateUpdate; a nested Tick would clear this buffer.
+            tickHandleBuffer.Clear();
+            foreach (InteractionAnimationHandle key in activeSessions.Keys)
+                tickHandleBuffer.Add(key);
+            try
             {
-                if (!activeSessions.TryGetValue(handles[i], out InteractionAnimationSession session))
-                    continue;
-                InteractionAnimationStopReason? reason = session.Tick(deltaTime);
-                if (reason.HasValue)
-                    TryStopInteraction(handles[i], reason.Value);
+                for (int i = 0; i < tickHandleBuffer.Count; i++)
+                {
+                    InteractionAnimationHandle handle = tickHandleBuffer[i];
+                    if (!activeSessions.TryGetValue(handle, out InteractionAnimationSession session))
+                        continue;
+                    InteractionAnimationStopReason? reason = session.Tick(deltaTime);
+                    if (reason.HasValue)
+                        TryStopInteraction(handle, reason.Value);
+                }
+            }
+            finally
+            {
+                tickHandleBuffer.Clear();
             }
         }
 

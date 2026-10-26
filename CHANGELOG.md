@@ -2,6 +2,13 @@
 
 Last updated: 2026-10-25
 
+## Unreleased
+
+- Crouched item pickup and drop no longer stand the body up for a frame:
+  live-body sessions enter the crouched pose instantly at start and stop, and
+  a base layer captured mid-transition replays its destination state. The
+  session tick no longer allocates per frame (y4ngz313 Upgrades issue 680).
+
 ## 1.0.4
 
 - Fixed a player's knee staying bent backwards after a live-body interaction
