@@ -1,8 +1,8 @@
 # Changelog
 
-Last updated: 2026-09-02
+Last updated: 2026-10-25
 
-## Unreleased
+## 1.0.4
 
 - Fixed a player's knee staying bent backwards after a live-body interaction
   ended mid-stride (the rig now re-captures vanilla's leg bind pose).
@@ -10,6 +10,10 @@ Last updated: 2026-09-02
   live-body interaction: the helmet visor now follows the camera through the
   restore-seam camera pin instead of being left where the interaction's last pose
   put it (y4ngz313/Y4NGZUpgrades#660).
+
+## 1.0.3
+
+- Rewrote the Thunderstore page on the shared Y4NGZ template (About Y4NGZ, Requirements, Compatibility, GitHub and Bugs sections). No code changes (#47).
 
 ## 1.0.2
 

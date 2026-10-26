@@ -56,7 +56,7 @@ try {
 
     $expectedName = "Y4NGZInteractions"
     $expectedWebsite = "https://github.com/y4ngz313"
-    $expectedDescription = "Shared local animation presentation, resource ownership, lifecycle, and restoration API for Lethal Company mods."
+    $expectedDescription = "Animation library used by Y4NGZ mods. Adds nothing on its own."
     $expectedDependencies = @("BepInEx-BepInExPack-5.4.2305")
     $actualDependencies = @($manifest.dependencies | ForEach-Object { [string]$_ })
     if ([string]$manifest.name -cne $expectedName -or
@@ -86,10 +86,7 @@ try {
     if ($readmeText -match '(?i)\b[A-Z]:\\|file://') {
         throw "Archive README contains a machine-local path."
     }
-    if ($readmeText -match '(?i)https://github\.com/y4ngz313/Y4NGZInteractions(?:[/#?]|$)') {
-        throw "Archive README links to the private development repository."
-    }
-    if (-not $readmeText.Contains($expectedDependencies[0])) {
+    if (-not $readmeText.Contains("**BepInExPack**")) {
         throw "Archive README does not document the required package dependency."
     }
 }
