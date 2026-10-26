@@ -10,6 +10,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         Replay
     }
 
+    internal enum AnimatorLayerReplayTarget
+    {
+        None,
+        Current,
+        Next
+    }
+
     internal sealed class AnimatorStateSnapshot
     {
         private const float CrossfadeDurationSeconds = 0.12f;
@@ -67,11 +74,19 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 for (int i = 0; i < layerCount; i++)
                 {
                     AnimatorStateInfo stateInfo = animator.GetCurrentAnimatorStateInfo(i);
+                    bool inTransition = animator.IsInTransition(i);
+                    AnimatorStateInfo nextStateInfo = inTransition
+                        ? animator.GetNextAnimatorStateInfo(i)
+                        : default;
                     layers[i] = new LayerSnapshot(
                         stateInfo.fullPathHash,
+                        stateInfo.shortNameHash,
                         stateInfo.normalizedTime,
+                        nextStateInfo.fullPathHash,
+                        nextStateInfo.shortNameHash,
+                        nextStateInfo.normalizedTime,
                         animator.GetLayerWeight(i),
-                        animator.IsInTransition(i));
+                        inTransition);
                 }
 
                 AnimatorControllerParameter[] animatorParameters = animator.parameters ?? Array.Empty<AnimatorControllerParameter>();
@@ -121,11 +136,19 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         /// Replays one captured layer onto the animator's CURRENT controller when that
         /// controller carries the same state. Live-body shell controllers retain vanilla's
         /// base layer, so this preserves a settled stance across the swap instead of
-        /// evaluating one frame in the controller's default standing state. In-progress
-        /// transitions fail closed to the presenter's vanilla-trigger fallback.
+        /// evaluating one frame in the controller's default standing state. A layer captured
+        /// mid-transition replays the transition's destination (see
+        /// <see cref="SelectReplayTarget"/>). True means a state was instantly played; the
+        /// caller's next Animator.Update lands it.
         /// </summary>
-        public bool TryReapplyLayerState(Animator animator, int layerIndex)
+        public bool TryReapplyLayerState(
+            Animator animator,
+            int layerIndex,
+            out AnimatorLayerReplayTarget replayTarget,
+            out int replayedShortNameHash)
         {
+            replayTarget = AnimatorLayerReplayTarget.None;
+            replayedShortNameHash = 0;
             if (animator == null || layerIndex < 0 ||
                 layerIndex >= layers.Length || layerIndex >= animator.layerCount)
             {
@@ -135,21 +158,61 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             try
             {
                 LayerSnapshot layer = layers[layerIndex];
-                if (layer.InTransition ||
-                    layer.FullPathHash == 0 ||
-                    !animator.HasState(layerIndex, layer.FullPathHash))
-                {
+                bool hasNextState = layer.InTransition &&
+                    layer.NextFullPathHash != 0 &&
+                    animator.HasState(layerIndex, layer.NextFullPathHash);
+                // The destination wins whenever it exists, so the source lookup is only needed
+                // when it does not.
+                bool hasCurrentState = !hasNextState &&
+                    layer.FullPathHash != 0 &&
+                    animator.HasState(layerIndex, layer.FullPathHash);
+                AnimatorLayerReplayTarget target = SelectReplayTarget(
+                    layer.FullPathHash,
+                    layer.NextFullPathHash,
+                    layer.InTransition,
+                    hasCurrentState,
+                    hasNextState);
+                if (target == AnimatorLayerReplayTarget.None)
                     return false;
-                }
 
+                bool playNext = target == AnimatorLayerReplayTarget.Next;
                 animator.SetLayerWeight(layerIndex, layer.Weight);
-                animator.Play(layer.FullPathHash, layerIndex, layer.NormalizedTime);
+                animator.Play(
+                    playNext ? layer.NextFullPathHash : layer.FullPathHash,
+                    layerIndex,
+                    playNext ? layer.NextNormalizedTime : layer.NormalizedTime);
+                replayTarget = target;
+                replayedShortNameHash = playNext ? layer.NextShortNameHash : layer.ShortNameHash;
                 return true;
             }
             catch
             {
+                replayTarget = AnimatorLayerReplayTarget.None;
+                replayedShortNameHash = 0;
                 return false;
             }
+        }
+
+        /// <summary>
+        /// Which captured state of one layer to replay. A layer captured mid-transition is
+        /// already heading into its NEXT state, and the source state may sit in the other
+        /// stance (CrouchIdle -> CrouchWalk keeps the crouch either way, but Idle1 -> CrouchDown
+        /// does not), so the destination at its own normalized time wins whenever the target
+        /// controller carries it. Otherwise the current state replays; a zero hash or a state
+        /// the controller lacks is refused.
+        /// </summary>
+        internal static AnimatorLayerReplayTarget SelectReplayTarget(
+            int currentStateHash,
+            int nextStateHash,
+            bool inTransition,
+            bool hasCurrentState,
+            bool hasNextState)
+        {
+            if (inTransition && nextStateHash != 0 && hasNextState)
+                return AnimatorLayerReplayTarget.Next;
+            if (currentStateHash != 0 && hasCurrentState)
+                return AnimatorLayerReplayTarget.Current;
+            return AnimatorLayerReplayTarget.None;
         }
 
         public bool Restore(Animator animator)
@@ -304,18 +367,31 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         private readonly struct LayerSnapshot
         {
             public readonly int FullPathHash;
+            public readonly int ShortNameHash;
             public readonly float NormalizedTime;
+            // Destination of the transition in flight at capture; zero when none was.
+            public readonly int NextFullPathHash;
+            public readonly int NextShortNameHash;
+            public readonly float NextNormalizedTime;
             public readonly float Weight;
             public readonly bool InTransition;
 
             public LayerSnapshot(
                 int fullPathHash,
+                int shortNameHash,
                 float normalizedTime,
+                int nextFullPathHash,
+                int nextShortNameHash,
+                float nextNormalizedTime,
                 float weight,
                 bool inTransition)
             {
                 FullPathHash = fullPathHash;
+                ShortNameHash = shortNameHash;
                 NormalizedTime = normalizedTime;
+                NextFullPathHash = nextFullPathHash;
+                NextShortNameHash = nextShortNameHash;
+                NextNormalizedTime = nextNormalizedTime;
                 Weight = weight;
                 InTransition = inTransition;
             }

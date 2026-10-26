@@ -3546,19 +3546,33 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
         // 0 = idle, 1 = walking, 2 = sprinting — matched by the shell controller's movement
         // transitions so the walk/run first-person loops play while moving with the item out.
-        private static readonly System.Reflection.FieldInfo VanillaIsWalkingField =
-            typeof(GameNetcodeStuff.PlayerControllerB).GetField(
-                "isWalking",
-                System.Reflection.BindingFlags.Instance |
-                System.Reflection.BindingFlags.NonPublic |
-                System.Reflection.BindingFlags.Public);
+        // Bound once as ref accessors: a FieldInfo.GetValue per local tick boxed the bool every
+        // frame. Null when this game build lacks the bool field, which keeps the fallbacks below.
+        private static readonly HarmonyLib.AccessTools.FieldRef<GameNetcodeStuff.PlayerControllerB, bool>
+            VanillaIsWalkingRef = BindVanillaBoolField("isWalking");
 
-        private static readonly System.Reflection.FieldInfo VanillaIsJumpingField =
-            typeof(GameNetcodeStuff.PlayerControllerB).GetField(
-                "isJumping",
-                System.Reflection.BindingFlags.Instance |
-                System.Reflection.BindingFlags.NonPublic |
-                System.Reflection.BindingFlags.Public);
+        private static readonly HarmonyLib.AccessTools.FieldRef<GameNetcodeStuff.PlayerControllerB, bool>
+            VanillaIsJumpingRef = BindVanillaBoolField("isJumping");
+
+        private static HarmonyLib.AccessTools.FieldRef<GameNetcodeStuff.PlayerControllerB, bool>
+            BindVanillaBoolField(string fieldName)
+        {
+            try
+            {
+                System.Reflection.FieldInfo field = typeof(GameNetcodeStuff.PlayerControllerB).GetField(
+                    fieldName,
+                    System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.NonPublic |
+                    System.Reflection.BindingFlags.Public);
+                if (field == null || field.FieldType != typeof(bool))
+                    return null;
+                return HarmonyLib.AccessTools.FieldRefAccess<GameNetcodeStuff.PlayerControllerB, bool>(field);
+            }
+            catch
+            {
+                return null;
+            }
+        }
 
         /// <summary>
         /// Locomotion inputs resolved for one session's own player, from whichever source is
@@ -3634,9 +3648,18 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             bool walking;
             string source;
-            object walkingValue = null;
-            try { walkingValue = VanillaIsWalkingField?.GetValue(player); } catch { }
-            if (walkingValue is bool vanillaWalking)
+            bool vanillaWalking = false;
+            bool vanillaWalkingKnown = false;
+            if (VanillaIsWalkingRef != null)
+            {
+                try
+                {
+                    vanillaWalking = VanillaIsWalkingRef(player);
+                    vanillaWalkingKnown = true;
+                }
+                catch { }
+            }
+            if (vanillaWalkingKnown)
             {
                 walking = vanillaWalking;
                 source = "vanilla_isWalking_field";
@@ -3649,16 +3672,15 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             bool jumping = false;
             bool jumpingKnown = false;
-            try
+            if (VanillaIsJumpingRef != null)
             {
-                object jumpingValue = VanillaIsJumpingField?.GetValue(player);
-                if (jumpingValue is bool vanillaJumping)
+                try
                 {
-                    jumping = vanillaJumping;
+                    jumping = VanillaIsJumpingRef(player);
                     jumpingKnown = true;
                 }
+                catch { }
             }
-            catch { }
 
             return new LocomotionState(
                 walking,
@@ -3959,18 +3981,21 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             if (!hasLastBaseLayerStateHash || lastBaseLayerStateHash != stateHash)
             {
-                string previous = hasLastBaseLayerStateHash
-                    ? DescribeBaseLayerState(lastBaseLayerStateHash)
-                    : "<none>";
+                if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+                {
+                    string previous = hasLastBaseLayerStateHash
+                        ? DescribeBaseLayerState(lastBaseLayerStateHash)
+                        : "<none>";
+                    context?.Logger?.LogInfo(
+                        "[LCInteractionAnimationAPI] live_body.base_layer_state_changed: " +
+                        $"frame={Time.frameCount} " +
+                        $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
+                        $"previousState='{previous}' state='{DescribeBaseLayerState(stateHash)}' " +
+                        $"stateHash={stateHash} isInTransition={isInTransition} " +
+                        $"crouching={crouching} crouchingKnown={crouchingKnown}.");
+                }
                 hasLastBaseLayerStateHash = true;
                 lastBaseLayerStateHash = stateHash;
-                context?.Logger?.LogInfo(
-                    "[LCInteractionAnimationAPI] live_body.base_layer_state_changed: " +
-                    $"frame={Time.frameCount} " +
-                    $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
-                    $"previousState='{previous}' state='{DescribeBaseLayerState(stateHash)}' " +
-                    $"stateHash={stateHash} isInTransition={isInTransition} " +
-                    $"crouching={crouching} crouchingKnown={crouchingKnown}.");
                 LogMidSessionSample("base_state_change");
             }
 
@@ -3998,6 +4023,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             FireTriggerIfExists(VanillaStartCrouchingTrigger);
             crouchStateResyncCount++;
+            if (!InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+                return;
+
             context?.Logger?.LogInfo(
                 "[LCInteractionAnimationAPI] live_body.crouch_state_resynced: " +
                 $"frame={Time.frameCount} " +
@@ -4764,39 +4792,52 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             // The shell carries vanilla's base layer, so replay the exact pre-swap state before
             // the first evaluation. This prevents a crouched equip (or a swap during a stance
-            // transition) from rendering the shell controller's default standing state once.
-            bool baseLayerStateReplayed = snapshot.TryReapplyLayerState(bodyAnimator, 0);
+            // transition) from rendering the shell controller's default standing state once. A
+            // capture taken mid-transition replays the transition's destination.
+            bool baseLayerStateReplayed = snapshot.TryReapplyLayerState(
+                bodyAnimator,
+                0,
+                out AnimatorLayerReplayTarget baseLayerReplayTarget,
+                out int replayedBaseStateHash);
             if (baseLayerStateReplayed &&
                 InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
             {
                 context.Logger?.LogInfo(
                     "[RestoreSeam.locomotion] base_layer_state_replayed: " +
                     $"frame={Time.frameCount} handle={context.Handle} phase='start' " +
+                    $"replayTarget='{FormatReplayTarget(baseLayerReplayTarget)}' " +
+                    $"state='{DescribeBaseLayerState(replayedBaseStateHash)}' " +
                     "action='replay_pre_swap_state_on_shell'.");
             }
 
-            // If an in-progress or third-party base state cannot be replayed, vanilla enters
-            // crouch only through the "startCrouching" trigger — an input edge that already
-            // passed when the session starts while the player is crouched. Use that trigger
-            // only as the compatibility fallback.
-            if (captureCrouching && !baseLayerStateReplayed)
-            {
-                FireTriggerIfExists(VanillaStartCrouchingTrigger);
-                if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
-                {
-                    context.Logger?.LogInfo(
-                        "[RestoreSeam.locomotion] crouch_entry_asserted: " +
-                        $"frame={Time.frameCount} handle={context.Handle} phase='start' " +
-                        "reason='session_started_while_crouched_base_state_unavailable' " +
-                        "action='fire_startCrouching_on_fresh_base_layer'.");
-                }
-            }
+            // A crouched player whose replay was refused, or landed on a standing state, would
+            // otherwise take the Update(0f) below in the shell's standing default (#680). The
+            // entry only writes animator state; that Update lands it before anything renders.
+            BaseLayerStanceEntryAction stanceEntry = ApplyBaseLayerStanceEntry(
+                captureCrouchingKnown,
+                captureCrouching,
+                baseLayerStateReplayed,
+                replayedBaseStateHash);
 
             SetBoolIfExists(body.activeBool, true);
             FireTriggerIfExists(body.enterTrigger);
             elapsedSeconds = 0f;
             ApplyLayerWeights();
             bodyAnimator.Update(0f);
+
+            if (stanceEntry != BaseLayerStanceEntryAction.None &&
+                InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+            {
+                string entryAction = stanceEntry == BaseLayerStanceEntryAction.PlayCrouchIdle
+                    ? "play_crouch_idle_on_shell_base_layer"
+                    : "fire_startCrouching_on_fresh_base_layer";
+                context.Logger?.LogInfo(
+                    "[RestoreSeam.locomotion] crouch_entry_asserted: " +
+                    $"frame={Time.frameCount} handle={context.Handle} phase='start' " +
+                    $"reason='{FormatStanceEntryReason(baseLayerStateReplayed)}' " +
+                    $"replayedState='{(baseLayerStateReplayed ? DescribeBaseLayerState(replayedBaseStateHash) : "<none>")}' " +
+                    $"{DescribeLandedBaseLayerState()} action='{entryAction}'.");
+            }
 
             context.Logger?.LogInfo(
                 "[LCInteractionAnimationAPI] live_body.controllerAssetName_applied: " +
@@ -5052,78 +5093,64 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
                 bool preserveLiveBaseLayer = restored &&
                     (stanceMismatch || restoreStateMode == AnimatorStateRestoreMode.Fresh);
+                AnimatorLayerReplayTarget liveReplayTarget = AnimatorLayerReplayTarget.None;
+                int replayedLiveStateHash = 0;
                 bool liveBaseLayerStateReplayed = preserveLiveBaseLayer &&
                     outgoingSessionState != null &&
-                    outgoingSessionState.TryReapplyLayerState(bodyAnimator, 0);
-                if (liveBaseLayerStateReplayed)
+                    outgoingSessionState.TryReapplyLayerState(
+                        bodyAnimator,
+                        0,
+                        out liveReplayTarget,
+                        out replayedLiveStateHash);
+
+                // The restored vanilla controller sits in its default (standing) base state
+                // whenever the live state was not replayed, and a replayed state can itself be a
+                // standing one. Vanilla fires "startCrouching" only on the crouch input edge —
+                // already consumed — so a player still crouched at stop would keep a standing
+                // base pose, and the next session would snapshot that broken pose as its
+                // baseline. #38: the trigger CROSSFADES from the restored standing Idle1 while
+                // the camera pin releases mid-blend, so enter CrouchIdle instantly; the trigger
+                // is left for a controller that lacks that state.
+                BaseLayerStanceEntryAction stanceEntry = preserveLiveBaseLayer
+                    ? ApplyBaseLayerStanceEntry(
+                        currentCrouchingKnown,
+                        currentCrouching,
+                        liveBaseLayerStateReplayed,
+                        replayedLiveStateHash)
+                    : BaseLayerStanceEntryAction.None;
+                if (liveBaseLayerStateReplayed || stanceEntry != BaseLayerStanceEntryAction.None)
                 {
                     try { bodyAnimator.Update(0f); } catch { }
-                    if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
-                    {
-                        context?.Logger?.LogInfo(
-                            "[RestoreSeam.locomotion] base_layer_state_replayed: " +
-                            $"frame={Time.frameCount} handle={context.Handle} phase='stop' " +
-                            $"stanceMismatch={stanceMismatch} " +
-                            $"restoreStateMode='{FormatRestoreStateMode(restoreStateMode)}' " +
-                            "action='replay_live_state_on_restored_controller'.");
-                    }
                 }
 
-                // When the captured base-layer state was not replayed (Fresh restore mode, or
-                // a stance mismatch skipped the replay), the restored vanilla controller sits
-                // in its default (standing) base state. Vanilla only fires "startCrouching" on
-                // the crouch input edge — already consumed — so a player still crouched at stop
-                // would keep a standing base pose indefinitely, and the next session would then
-                // snapshot that broken pose as its baseline. Re-assert the crouch entry so the
-                // restored base layer matches the live stance.
-                if (CrouchTriggerPolicy.ShouldAssertRestoreEntry(
-                    preserveLiveBaseLayer,
-                    liveBaseLayerStateReplayed,
-                    currentCrouchingKnown,
-                    currentCrouching,
-                    crouchEntryMirroredDuringRestore))
+                if (liveBaseLayerStateReplayed &&
+                    InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
                 {
-                    // #38: "startCrouching" CROSSFADES from the restored standing Idle1, and the
-                    // camera pin releases mid-blend — the viewpoint pops up toward standing and
-                    // sinks back as the blend completes. The player was crouched the whole time,
-                    // so enter the cluster instantly; the trigger stays as the fallback for a
-                    // controller whose cluster states are not the recognised vanilla set.
-                    bool landedInCrouchCluster = false;
-                    try
-                    {
-                        bodyAnimator.Play(VanillaCrouchIdleStateHash, 0, 0f);
-                        bodyAnimator.Update(0f);
-                        landedInCrouchCluster = CrouchStateResyncPolicy.IsCrouchClusterState(
-                            bodyAnimator.GetCurrentAnimatorStateInfo(0).shortNameHash,
-                            VanillaCrouchDownStateHash,
-                            VanillaCrouchIdleStateHash,
-                            VanillaCrouchWalkStateHash);
-                    }
-                    catch { }
+                    context?.Logger?.LogInfo(
+                        "[RestoreSeam.locomotion] base_layer_state_replayed: " +
+                        $"frame={Time.frameCount} handle={context.Handle} phase='stop' " +
+                        $"stanceMismatch={stanceMismatch} " +
+                        $"restoreStateMode='{FormatRestoreStateMode(restoreStateMode)}' " +
+                        $"replayTarget='{FormatReplayTarget(liveReplayTarget)}' " +
+                        $"state='{DescribeBaseLayerState(replayedLiveStateHash)}' " +
+                        "action='replay_live_state_on_restored_controller'.");
+                }
 
-                    CrouchRestoreEntryOutcome entryOutcome =
-                        CrouchTriggerPolicy.ResolveRestoreEntryOutcome(
-                            shouldAssertRestoreEntry: true,
-                            landedInCrouchCluster);
-                    if (entryOutcome == CrouchRestoreEntryOutcome.TriggerFallback)
-                    {
-                        FireTriggerIfExists(VanillaStartCrouchingTrigger);
-                        try { bodyAnimator.Update(0f); } catch { }
-                    }
-
-                    if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
-                    {
-                        string entryAction = entryOutcome == CrouchRestoreEntryOutcome.InstantEntry
-                            ? "play_crouch_idle_on_restored_base_layer"
-                            : "fire_startCrouching_on_restored_base_layer";
-                        context?.Logger?.LogInfo(
-                            "[RestoreSeam.locomotion] crouch_entry_asserted: " +
-                            $"frame={Time.frameCount} handle={context.Handle} phase='stop' " +
-                            $"stanceMismatch={stanceMismatch} " +
-                            $"restoreStateMode='{FormatRestoreStateMode(restoreStateMode)}' " +
-                            $"preStateReplayEntryMirrored={crouchEntryMirroredDuringRestore} " +
-                            $"entryOutcome='{entryOutcome}' action='{entryAction}'.");
-                    }
+                if (stanceEntry != BaseLayerStanceEntryAction.None &&
+                    InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+                {
+                    string entryAction = stanceEntry == BaseLayerStanceEntryAction.PlayCrouchIdle
+                        ? "play_crouch_idle_on_restored_base_layer"
+                        : "fire_startCrouching_on_restored_base_layer";
+                    context?.Logger?.LogInfo(
+                        "[RestoreSeam.locomotion] crouch_entry_asserted: " +
+                        $"frame={Time.frameCount} handle={context.Handle} phase='stop' " +
+                        $"stanceMismatch={stanceMismatch} " +
+                        $"restoreStateMode='{FormatRestoreStateMode(restoreStateMode)}' " +
+                        $"preStateReplayEntryMirrored={crouchEntryMirroredDuringRestore} " +
+                        $"reason='{FormatStanceEntryReason(liveBaseLayerStateReplayed)}' " +
+                        $"replayedState='{(liveBaseLayerStateReplayed ? DescribeBaseLayerState(replayedLiveStateHash) : "<none>")}' " +
+                        $"{DescribeLandedBaseLayerState()} action='{entryAction}'.");
                 }
 
                 return restored ? "restored" : "controller_changed_externally";
@@ -5145,6 +5172,95 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 default:
                     return "fresh";
             }
+        }
+
+        private static string FormatReplayTarget(AnimatorLayerReplayTarget replayTarget)
+        {
+            switch (replayTarget)
+            {
+                case AnimatorLayerReplayTarget.Current:
+                    return "current";
+                case AnimatorLayerReplayTarget.Next:
+                    return "next_in_transition";
+                default:
+                    return "none";
+            }
+        }
+
+        private static string FormatStanceEntryReason(bool baseStateReplayed)
+        {
+            return baseStateReplayed
+                ? "replayed_state_outside_crouch_cluster"
+                : "base_state_not_replayable";
+        }
+
+        private string DescribeLandedBaseLayerState()
+        {
+            try
+            {
+                return
+                    $"landedState='{DescribeBaseLayerState(bodyAnimator.GetCurrentAnimatorStateInfo(0).shortNameHash)}' " +
+                    $"landedInTransition={bodyAnimator.IsInTransition(0)}";
+            }
+            catch
+            {
+                return "landedState='<unknown>' landedInTransition=<unknown>";
+            }
+        }
+
+        /// <summary>
+        /// Resolves and applies the base-layer stance entry for a controller swap (#680; see
+        /// <see cref="BaseLayerStanceEntryPolicy"/>). Writes animator state only and never
+        /// evaluates: the caller's next Animator.Update(0f) lands the entry before anything
+        /// renders. Stance is the session player's replicated isCrouching, so remote and observer
+        /// sessions take the same path as the local player.
+        /// </summary>
+        private BaseLayerStanceEntryAction ApplyBaseLayerStanceEntry(
+            bool crouchingKnown,
+            bool crouching,
+            bool baseStateReplayed,
+            int replayedStateHash)
+        {
+            bool crouchIdleAvailable = false;
+            if (crouchingKnown && crouching)
+            {
+                try { crouchIdleAvailable = bodyAnimator.HasState(0, VanillaCrouchIdleStateHash); }
+                catch { }
+            }
+
+            BaseLayerStanceEntryAction action = BaseLayerStanceEntryPolicy.Resolve(
+                crouchingKnown,
+                crouching,
+                baseStateReplayed,
+                CrouchStateResyncPolicy.IsCrouchClusterState(
+                    replayedStateHash,
+                    VanillaCrouchDownStateHash,
+                    VanillaCrouchIdleStateHash,
+                    VanillaCrouchWalkStateHash),
+                crouchIdleAvailable);
+            if (crouchingKnown
+                && crouching
+                && action != BaseLayerStanceEntryAction.FireStartCrouchingTrigger)
+            {
+                // A "startCrouching" mirrored during restore must not survive into a landed crouch
+                // state (PlayCrouchIdle, or None after a crouch-cluster replay): the next Update
+                // would crossfade into CrouchDown, whose first key is the standing pose.
+                ResetTriggerIfExists(VanillaStartCrouchingTrigger);
+            }
+
+            if (action == BaseLayerStanceEntryAction.PlayCrouchIdle)
+            {
+                // "crouching" must hold so CrouchIdle's exit to Idle1 cannot open on the landing
+                // Update.
+                SetBoolIfExists(VanillaCrouchingBool, true);
+                try { bodyAnimator.Play(VanillaCrouchIdleStateHash, 0, 0f); } catch { }
+            }
+            else if (action == BaseLayerStanceEntryAction.FireStartCrouchingTrigger)
+            {
+                FireTriggerIfExists(VanillaStartCrouchingTrigger);
+            }
+
+            return action;
         }
 
         private void SuppressLiveRigBuilders()
