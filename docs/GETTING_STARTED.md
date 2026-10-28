@@ -1,6 +1,6 @@
 # Getting Started
 
-Last updated: 2026-08-11
+Last updated: 2026-10-28
 
 Run the supplied example before integrating the API into another mod. This separates authoring, packaging, networking, and runtime concerns while every component is still known-good.
 
@@ -34,6 +34,14 @@ dotnet test Y4NGZInteractions.slnx -c Release --no-build
 ~~~
 
 The game API and Unity compile assemblies come from public packages. A local game installation is not used by restore, build, or unit tests.
+
+`Y4NGZ_GALE_PROFILE` selects the deploy profile (`-p:TestProfileRoot` overrides it).
+An opt-in Release deployment (`-p:EnableProfileDeploy=true`) fails without a
+profile unless `-p:DeployTarget` supplies a destination. The
+`release/stage-y4ngz-interactions.ps1` stager needs no profile: unlike sink-based
+stagers, it passes `-p:EnableProfileDeploy=false` and packages the build output.
+Compile references are public packages, so no installed-profile fallback is
+needed; ordinary Release builds keep deployment disabled.
 
 ## 2. Build the clean-room example bundles
 

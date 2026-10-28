@@ -14,17 +14,17 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <!-- Local playtest profile. Derived from the environment so no machine-specific path is
-         checked in; override TestProfileRoot (or DeployTarget) to deploy elsewhere. -->
-    <TestProfileRoot Condition="'$(TestProfileRoot)' == ''">$(AppData)\com.kesomannen.gale\lethal-company\profiles\Current</TestProfileRoot>
+    <!-- Local playtest profile. Set Y4NGZ_GALE_PROFILE or override TestProfileRoot;
+         DeployTarget may additionally redirect the plugin output. -->
+    <TestProfileRoot>$(Y4NGZ_GALE_PROFILE)</TestProfileRoot>
     <BepInExPlugins Condition="'$(BepInExPlugins)' == ''">$(TestProfileRoot)\BepInEx\plugins</BepInExPlugins>
     <!-- A mod manager names a locally imported package's plugin directory after the package,
          so a re-imported profile holds `Y4NGZInteractions` where an older one holds the
          hand-made `y4ngz-Y4NGZInteractions`. Deploying into the directory the profile does not
          load from is silent: BepInEx keeps running the other copy and the build looks applied.
          Prefer the directory that exists, newest layout first. -->
-    <DeployTarget Condition="'$(DeployTarget)' == '' and Exists('$(BepInExPlugins)\Y4NGZInteractions')">$(BepInExPlugins)\Y4NGZInteractions</DeployTarget>
-    <DeployTarget Condition="'$(DeployTarget)' == ''">$(BepInExPlugins)\y4ngz-Y4NGZInteractions</DeployTarget>
+    <DeployTarget Condition="'$(DeployTarget)' == '' and '$(TestProfileRoot)' != '' and Exists('$(BepInExPlugins)\Y4NGZInteractions')">$(BepInExPlugins)\Y4NGZInteractions</DeployTarget>
+    <DeployTarget Condition="'$(DeployTarget)' == '' and '$(TestProfileRoot)' != ''">$(BepInExPlugins)\y4ngz-Y4NGZInteractions</DeployTarget>
   </PropertyGroup>
 
   <ItemGroup>
@@ -58,7 +58,8 @@
 
   <Target Name="DeployToProfile"
           AfterTargets="Build"
-          Condition="'$(Configuration)' == 'Release' and '$(EnableProfileDeploy)' == 'true' and '$(DeployTarget)' != ''">
+          Condition="'$(Configuration)' == 'Release' and '$(EnableProfileDeploy)' == 'true'">
+    <Error Condition="'$(DeployTarget)' == ''" Text="Y4NGZ_GALE_PROFILE is not set (full Gale profile folder path) and no -p:TestProfileRoot was passed; deploying to 'Current' is retired (#714)." />
     <MakeDir Directories="$(DeployTarget)" />
     <ItemGroup>
       <Y4NGZInteractionsDeployFiles Include="$(TargetPath)" />
