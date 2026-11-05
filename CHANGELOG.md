@@ -1,8 +1,8 @@
 # Changelog
 
-Last updated: 2026-10-25
+Last updated: 2026-11-05
 
-## Unreleased
+## 1.0.5
 
 - Crouched item pickup and drop no longer stand the body up for a frame:
   live-body sessions enter the crouched pose instantly at start and stop, and
