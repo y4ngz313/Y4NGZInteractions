@@ -217,6 +217,93 @@ public sealed class ManifestAndRegistryTests : IDisposable
         Assert.Same(hand, resolved);
     }
 
+    [Fact]
+    public void SchemaOnePropLocalBodyCopyMigrates()
+    {
+        const string json = """
+        {
+          "schemaVersion": 1,
+          "interactionId": "legacy-body-copy",
+          "body": {
+            "enabled": true,
+            "prop": {
+              "enabled": true,
+              "prefabName": "LegacyProp",
+              "attachBone": "hand.R",
+              "localBodyCopy": true
+            }
+          }
+        }
+        """;
+
+        InteractionAnimationValidationReport report =
+            InteractionAnimationManifestValidator.Parse(
+                json, out InteractionAnimationManifest manifest);
+
+        Assert.True(report.IsValid);
+        Assert.True(manifest.body.prop.localBodyCopy);
+    }
+
+    [Theory]
+    [InlineData(",\n      \"localBodyCopy\": true", true)]
+    [InlineData(",\n      \"localBodyCopy\": false", false)]
+    [InlineData("", false)]
+    public void SchemaTwoPropLocalBodyCopyIsAcceptedAndDefaultsOff(
+        string localBodyCopyField,
+        bool expected)
+    {
+        string json = """
+        {
+          "schemaVersion": 2,
+          "interactionId": "body-copy",
+          "body": {
+            "enabled": true,
+            "prop": {
+              "enabled": true,
+              "prefabAssetName": "ExactProp",
+              "attachBonePath": "metarig/spine.003/shoulder.R/arm.R_upper/arm.R_lower/hand.R"{{FIELD}}
+            }
+          }
+        }
+        """.Replace("{{FIELD}}", localBodyCopyField);
+
+        InteractionAnimationValidationReport report =
+            InteractionAnimationManifestValidator.Parse(
+                json, out InteractionAnimationManifest manifest);
+
+        Assert.True(report.IsValid);
+        Assert.DoesNotContain(report.Issues, issue => issue.Code == "manifest_unknown_field");
+        Assert.Equal(expected, manifest.body.prop.localBodyCopy);
+    }
+
+    [Theory]
+    [InlineData(true, true, false, false, 1 << 23, 23, true)]
+    [InlineData(true, true, false, true, 1 << 23, 23, false)]
+    [InlineData(true, true, false, false, ~(1 << 23), 23, false)]
+    [InlineData(false, true, false, false, 1 << 23, 23, false)]
+    [InlineData(true, false, false, false, 1 << 23, 23, false)]
+    [InlineData(true, true, true, false, 1 << 23, 23, false)]
+    [InlineData(true, true, false, false, -1, 0, true)]
+    public void LocalBodyPropCopyFollowsBodyVisibilityPerCamera(
+        bool enabled,
+        bool activeInHierarchy,
+        bool forceRenderingOff,
+        bool shadowsOnly,
+        int cullingMask,
+        int layer,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            LocalBodyPropCopy.IsBodyRenderedForCamera(
+                enabled,
+                activeInHierarchy,
+                forceRenderingOff,
+                shadowsOnly,
+                cullingMask,
+                layer));
+    }
+
     private static TestTransform CreateNestedHandRig(out TestTransform hand)
     {
         var root = new TestTransform("root");

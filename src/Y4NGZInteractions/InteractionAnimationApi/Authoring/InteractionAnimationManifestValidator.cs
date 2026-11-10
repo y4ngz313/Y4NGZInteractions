@@ -268,7 +268,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Authoring
                     "localPosition",
                     "localEulerAngles",
                     "localScale",
-                    "releaseSeconds");
+                    "releaseSeconds",
+                    "localBodyCopy");
                 ValidateVectorProperties(
                     prop["localPosition"],
                     propPath + ".localPosition",

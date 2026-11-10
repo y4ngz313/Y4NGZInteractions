@@ -1,6 +1,6 @@
 # Manifest Reference
 
-Last updated: 2026-08-09
+Last updated: 2026-11-10
 
 New content uses strict schema version 2. Field names are exact and case-sensitive; unknown or duplicate fields are errors. Every validation issue identifies a stable code and JSON path.
 
@@ -114,11 +114,14 @@ An enabled clip pack requires a confined bundleFileName and at least one unique 
   "localPosition": { "x": 0, "y": 0, "z": 0 },
   "localEulerAngles": { "x": 0, "y": 0, "z": 0 },
   "localScale": 1,
-  "releaseSeconds": 0
+  "releaseSeconds": 0,
+  "localBodyCopy": false
 }
 ~~~
 
 The attachment path is relative to the arms metarig used by the presenter.
+
+localBodyCopy (default false) also attaches, for the local player only, a visual copy named `Y4NGZ_<prefabAssetName>_BodyInstance` to the same bone on the full body; cameras that render the local body draw the copy instead of the first-person prop. See [Advanced Prop Recipe](ADVANCED_PROP_RECIPE.md).
 
 ## Path rules
 

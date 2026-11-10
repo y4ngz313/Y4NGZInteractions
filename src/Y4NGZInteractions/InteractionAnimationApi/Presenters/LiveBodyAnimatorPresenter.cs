@@ -173,6 +173,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private Transform rightHandBone;
         private Transform rightShoulderBone;
         private GameObject propInstance;
+        private readonly LocalBodyPropCopy propBodyCopy = new LocalBodyPropCopy();
         private bool propReleased;
         private bool exitRequested;
         private float exitElapsedSeconds;
@@ -4607,6 +4608,71 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 $"handle={context.Handle} prefab='{prop.prefabAssetName}' bone='{prop.attachBonePath}' " +
                 $"localPos=({prop.localPosition.x:0.###},{prop.localPosition.y:0.###},{prop.localPosition.z:0.###}) " +
                 $"scale={prop.localScale:0.####}.");
+
+            AttachPropBodyCopyIfConfigured(prefab, prop, armsMetarig);
+        }
+
+        /// <summary>
+        /// y4ngz313/Y4NGZUpgrades#806: opt-in (<c>body.prop.localBodyCopy</c>) visual copy of the
+        /// local player's prop on the full body's bone, beside the first-person prop on the arms
+        /// rig. <see cref="LocalBodyPropCopy"/> shows it, and hides the first-person prop, only for
+        /// cameras that render the local body. Never fails the session start.
+        /// </summary>
+        private void AttachPropBodyCopyIfConfigured(
+            GameObject prefab,
+            InteractionAnimationManifest.PropManifest prop,
+            Transform armsMetarig)
+        {
+            // armsMetarig is resolved only for the local player; remote players' props already
+            // sit on the full body's bone.
+            if (!prop.localBodyCopy || armsMetarig == null || propInstance == null)
+                return;
+
+            Transform bodyBone = ResolvePropAttachBone(
+                bodyAnimator != null ? bodyAnimator.transform : null,
+                prop);
+            if (bodyBone == null)
+            {
+                context?.Logger?.LogWarning(
+                    "[LCInteractionAnimationAPI] live_body.prop_body_copy_bone_missing: " +
+                    $"handle={context.Handle} prefab='{prop.prefabAssetName}' bone='{prop.attachBonePath}'.");
+                return;
+            }
+
+            GameObject bodyCopy = null;
+            try
+            {
+                Renderer localBodyModel = context?.Request?.Player?.thisPlayerModel;
+                bodyCopy = UnityEngine.Object.Instantiate(prefab, bodyBone, false);
+                bodyCopy.name = "Y4NGZ_" + prop.prefabAssetName + "_BodyInstance";
+                bodyCopy.transform.localPosition = prop.localPosition.ToUnityVector3();
+                bodyCopy.transform.localEulerAngles = prop.localEulerAngles.ToUnityVector3();
+                bodyCopy.transform.localScale = Vector3.one * (prop.localScale > 0f ? prop.localScale : 1f);
+                SetLayerRecursive(bodyCopy, bodyBone.gameObject.layer);
+                LocalBodyPropCopy.StripToVisual(bodyCopy);
+                propBodyCopy.Begin(
+                    bodyCopy,
+                    propInstance,
+                    localBodyModel,
+                    context?.Logger,
+                    context?.Handle.ToString());
+            }
+            catch (Exception exception)
+            {
+                propBodyCopy.Destroy();
+                if (bodyCopy != null)
+                {
+                    try { UnityEngine.Object.Destroy(bodyCopy); } catch { }
+                }
+                context?.Logger?.LogWarning(
+                    "[LCInteractionAnimationAPI] live_body.prop_body_copy_failed: " +
+                    $"handle={context.Handle} prefab='{prop.prefabAssetName}' error='{exception.Message}'.");
+                return;
+            }
+
+            context?.Logger?.LogInfo(
+                "[LCInteractionAnimationAPI] live_body.prop_body_copy_attached: " +
+                $"handle={context.Handle} instance='{bodyCopy.name}' bone='{bodyBone.name}'.");
         }
 
         private void ReleasePropIfDue()
@@ -4627,6 +4693,17 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
         private void DestroyProp(string callSite)
         {
+            // The body copy goes first and on its own: the first-person instance may already be
+            // Unity-null (scene teardown) while the copy and its camera hook still exist.
+            if (propBodyCopy.Destroy())
+            {
+                context?.Logger?.LogInfo(
+                    "[LCInteractionAnimationAPI] live_body.prop_body_copy_destroyed: " +
+                    $"frame={Time.frameCount} " +
+                    $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
+                    $"callSite='{callSite}'.");
+            }
+
             if (propInstance == null)
                 return;
 
