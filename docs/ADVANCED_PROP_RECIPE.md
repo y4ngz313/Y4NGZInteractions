@@ -40,12 +40,12 @@ releaseSeconds zero keeps the prop until restoration. A positive value releases 
 
 ### Local body copy
 
-The local player's prop rides the first-person arms rig, which follows the camera, not the body. A camera that renders the local player's own body (a drone view, a third-person camera) would show the prop floating above the body's hands. Add `"localBodyCopy": true` to the prop to opt in to a body-side copy:
+The local player's prop rides the first-person arms rig, which follows the camera, not the body. A separate camera that renders the local player's own body (a drone camera, a feed) would show the prop floating above the body's hands. Add `"localBodyCopy": true` to the prop to opt in to a body-side copy:
 
 - For the local player only, a second instance of the prefab, named `Y4NGZ_<prefabAssetName>_BodyInstance`, is attached to the full body's bone with the same local position, rotation and scale. The first-person prop (`Y4NGZ_<prefabAssetName>_Instance`) is unchanged. Remote players are unchanged too: their prop already sits on the body.
 - The body bone is resolved with the same attach path from the body animator root, as for remote players. If it does not resolve there, the copy is skipped with a `live_body.prop_body_copy_bone_missing` warning and the session runs as without the flag.
 - The copy is visual only: colliders, rigidbodies and joints are removed, and lights and audio sources are disabled.
-- Each camera decides just before it renders (`RenderPipelineManager.beginCameraRendering`). A camera renders the local body when `thisPlayerModel` is enabled, active, not forced off, not shadows-only, and on a layer in the camera's culling mask. Such a camera draws the copy, on the body's layer, and not the first-person prop. Every other camera draws the first-person prop as before and not the copy.
+- Each camera decides just before it renders (`RenderPipelineManager.beginCameraRendering`). The local player's own gameplay camera (`gameplayCamera`) never draws the copy and always draws the first-person prop, even when another mod makes it render the local body (for example a mod that shows the body in first person or moves the gameplay camera for a third-person view). Any other camera renders the local body when `thisPlayerModel` is enabled, active, not forced off, not shadows-only, and on a layer in the camera's culling mask. Such a camera draws the copy, on the body's layer, and not the first-person prop. A camera that does not render the local body draws the first-person prop as before and not the copy.
 - Interactions owns `Renderer.forceRenderingOff` on both instances, including renderers you parent under either instance later (a screen quad, for example); they follow the same rule. Find both instances by name to dress both, and do not set `forceRenderingOff` on their renderers yourself.
 - A camera whose own `beginCameraRendering` handler makes the body visible after Interactions' handler has run sees the first-person prop, not the copy. Make the body visible before that camera's rendering starts instead.
 
@@ -73,7 +73,7 @@ Run prop attachment, controller, clip binding, and bundle validation. In game, v
 
 - local and remote grip placement;
 - no double rendering;
-- with `localBodyCopy`, one prop per camera: the arms-rig prop in first person, the copy in the body's hand in a camera that renders your own body;
+- with `localBodyCopy`, one prop per camera: the arms-rig prop in your own view, also when a mod renders your body there, and the copy in the body's hand in any other camera that renders your own body;
 - repeated start/stop and graceful exit;
 - natural completion and interruption;
 - death, ladder, and round transitions;

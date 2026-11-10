@@ -304,6 +304,23 @@ public sealed class ManifestAndRegistryTests : IDisposable
                 layer));
     }
 
+    [Theory]
+    // Own gameplay camera rendering the local body (a mod showing the body in first person).
+    [InlineData(true, true, false)]
+    [InlineData(true, false, false)]
+    // Any other camera (drone camera, feed) follows the body.
+    [InlineData(false, true, true)]
+    [InlineData(false, false, false)]
+    public void LocalBodyPropCopyNeverDrawsInOwnGameplayCamera(
+        bool isOwnViewCamera,
+        bool bodyRenderedForCamera,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            LocalBodyPropCopy.ShouldDrawBodyCopy(isOwnViewCamera, bodyRenderedForCamera));
+    }
+
     private static TestTransform CreateNestedHandRig(out TestTransform hand)
     {
         var root = new TestTransform("root");

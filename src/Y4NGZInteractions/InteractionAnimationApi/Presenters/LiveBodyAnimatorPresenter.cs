@@ -4616,7 +4616,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         /// y4ngz313/Y4NGZUpgrades#806: opt-in (<c>body.prop.localBodyCopy</c>) visual copy of the
         /// local player's prop on the full body's bone, beside the first-person prop on the arms
         /// rig. <see cref="LocalBodyPropCopy"/> shows it, and hides the first-person prop, only for
-        /// cameras that render the local body. Never fails the session start.
+        /// cameras other than the player's own gameplay camera that render the local body. Never
+        /// fails the session start.
         /// </summary>
         private void AttachPropBodyCopyIfConfigured(
             GameObject prefab,
@@ -4643,6 +4644,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             try
             {
                 Renderer localBodyModel = context?.Request?.Player?.thisPlayerModel;
+                Camera ownViewCamera = context?.Request?.Player?.gameplayCamera;
                 bodyCopy = UnityEngine.Object.Instantiate(prefab, bodyBone, false);
                 bodyCopy.name = "Y4NGZ_" + prop.prefabAssetName + "_BodyInstance";
                 bodyCopy.transform.localPosition = prop.localPosition.ToUnityVector3();
@@ -4654,6 +4656,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     bodyCopy,
                     propInstance,
                     localBodyModel,
+                    ownViewCamera,
                     context?.Logger,
                     context?.Handle.ToString());
             }

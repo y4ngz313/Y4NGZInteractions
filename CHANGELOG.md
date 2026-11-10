@@ -5,9 +5,9 @@ Last updated: 2026-11-10
 ## 1.0.6
 
 - Props can opt in to `localBodyCopy`: the local player's own body then holds
-  a visual copy of the prop, seen by every camera that renders that body
-  (drone or third-person views), while the first-person prop stays as it was
-  (y4ngz313/Y4NGZUpgrades#806).
+  a visual copy of the prop, seen by other cameras that render that body
+  (such as a drone camera); the player's own view keeps the first-person prop
+  as before (y4ngz313/Y4NGZUpgrades#806).
 
 ## 1.0.5
 

@@ -10,12 +10,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
     /// y4ngz313/Y4NGZUpgrades#806: per-camera visibility of the local player's body-side copy of a
     /// live-body prop (manifest <c>body.prop.localBodyCopy</c>). The first-person prop rides the arms
     /// rig, which follows the camera container rather than the body, so a camera that renders the
-    /// local body (a drone or third-person view) would show it floating above the body's hands.
-    /// Each camera decides in <c>beginCameraRendering</c>: where the local body is drawn, the copy on
-    /// the body's bone is drawn and the first-person prop is hidden; elsewhere the copy is hidden and
-    /// the renderers this owner hid on the first-person prop are shown again. Renderers a consumer
-    /// parents under either instance later follow the same rule. The camera hook exists only while
-    /// a copy exists.
+    /// local body (a drone camera, a feed) would show it floating above the body's hands.
+    /// Each camera decides in <c>beginCameraRendering</c>. The local player's own gameplay camera
+    /// never draws the copy and keeps the first-person prop, even when another mod makes it render
+    /// the local body. Every other camera that renders the local body draws the copy on the body's
+    /// bone and hides the first-person prop; elsewhere the copy is hidden and the renderers this
+    /// owner hid on the first-person prop are shown again. Renderers a consumer parents under
+    /// either instance later follow the same rule. The camera hook exists only while a copy exists.
     /// </summary>
     internal sealed class LocalBodyPropCopy
     {
@@ -26,6 +27,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private GameObject bodyCopy;
         private GameObject firstPersonProp;
         private Renderer localBodyModel;
+        private Camera ownViewCamera;
         private ManualLogSource logger;
         private string handle = "<none>";
         private int bodyCopyHierarchyCount = -1;
@@ -63,6 +65,16 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         }
 
         /// <summary>
+        /// Whether a camera draws the body copy (and hides the first-person prop): never the local
+        /// player's own gameplay camera, whatever it renders; any other camera that renders the
+        /// local body.
+        /// </summary>
+        internal static bool ShouldDrawBodyCopy(bool isOwnViewCamera, bool bodyRenderedForCamera)
+        {
+            return !isOwnViewCamera && bodyRenderedForCamera;
+        }
+
+        /// <summary>
         /// Makes a freshly instantiated copy visual only: physics components are removed at once
         /// (no frame in which the copy can be hit or pushed), lights and audio sources disabled.
         /// </summary>
@@ -95,12 +107,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
         /// <summary>
         /// Takes ownership of <paramref name="copy"/> and starts the per-camera visibility hook.
-        /// A copy still held from an earlier call is destroyed first.
+        /// <paramref name="ownView"/> is the local player's gameplay camera (may be null), which
+        /// never draws the copy. A copy still held from an earlier call is destroyed first.
         /// </summary>
         internal void Begin(
             GameObject copy,
             GameObject firstPersonInstance,
             Renderer localBody,
+            Camera ownView,
             ManualLogSource log,
             string sessionHandle)
         {
@@ -113,6 +127,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             bodyCopy = copy;
             firstPersonProp = firstPersonInstance;
             localBodyModel = localBody;
+            ownViewCamera = ownView;
             logger = log;
             handle = sessionHandle ?? "<none>";
             bodyCopyHierarchyCount = -1;
@@ -156,9 +171,15 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     return;
                 }
 
-                bool bodyRendered = IsLocalBodyRendered(camera);
-                ApplyToBodyCopy(bodyRendered);
-                if (bodyRendered)
+                // The own gameplay camera skips the body test: a mod that renders the local body
+                // through it still sees the first-person prop, never the copy.
+                bool isOwnViewCamera =
+                    !ReferenceEquals(camera, null) && ReferenceEquals(camera, ownViewCamera);
+                bool drawCopy = ShouldDrawBodyCopy(
+                    isOwnViewCamera,
+                    !isOwnViewCamera && IsLocalBodyRendered(camera));
+                ApplyToBodyCopy(drawCopy);
+                if (drawCopy)
                     HideDrawnFirstPersonRenderers();
                 else
                     RestoreHiddenFirstPersonRenderers();
@@ -192,15 +213,15 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 modelObject.layer);
         }
 
-        private void ApplyToBodyCopy(bool bodyRendered)
+        private void ApplyToBodyCopy(bool drawCopy)
         {
             RefreshRenderersIfStale(
                 bodyCopy,
                 bodyCopyRenderers,
                 ref bodyCopyHierarchyCount,
                 ref bodyCopyChildCount);
-            bool forceOff = !bodyRendered;
-            int bodyLayer = bodyRendered ? localBodyModel.gameObject.layer : 0;
+            bool forceOff = !drawCopy;
+            int bodyLayer = drawCopy ? localBodyModel.gameObject.layer : 0;
             for (int i = 0; i < bodyCopyRenderers.Count; i++)
             {
                 Renderer renderer = bodyCopyRenderers[i];
@@ -209,7 +230,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
                 if (renderer.forceRenderingOff != forceOff)
                     renderer.forceRenderingOff = forceOff;
-                if (bodyRendered)
+                if (drawCopy)
                 {
                     GameObject rendererObject = renderer.gameObject;
                     if (rendererObject.layer != bodyLayer)
@@ -289,6 +310,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             bodyCopy = null;
             firstPersonProp = null;
             localBodyModel = null;
+            ownViewCamera = null;
             logger = null;
             handle = "<none>";
             bodyCopyRenderers.Clear();
