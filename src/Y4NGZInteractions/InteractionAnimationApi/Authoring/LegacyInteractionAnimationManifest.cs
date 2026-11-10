@@ -98,6 +98,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Authoring
             internal InteractionAnimationVector3 localEulerAngles;
             internal float localScale = 1f;
             internal float releaseSeconds;
+            internal bool localBodyCopy;
         }
 
         [Serializable]

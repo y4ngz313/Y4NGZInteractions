@@ -1,3 +1,4 @@
 Y4NGZInteractions.InteractionAnimationApi.Authoring.InteractionAnimationManifest.BodyManifest.localCameraOwnedExternally -> bool
 Y4NGZInteractions.InteractionAnimationApi.Authoring.InteractionAnimationManifest.BodyManifest.stabilizeLocalCameraPosition -> bool
 Y4NGZInteractions.InteractionAnimationApi.Authoring.InteractionAnimationManifest.BodyManifest.stopOnGameplayCameraDisplacement -> bool
+Y4NGZInteractions.InteractionAnimationApi.Authoring.InteractionAnimationManifest.PropManifest.localBodyCopy -> bool

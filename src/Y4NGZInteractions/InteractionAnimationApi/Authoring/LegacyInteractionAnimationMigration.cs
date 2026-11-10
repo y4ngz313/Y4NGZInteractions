@@ -91,7 +91,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Authoring
                         localPosition = oldProp.localPosition,
                         localEulerAngles = oldProp.localEulerAngles,
                         localScale = oldProp.localScale,
-                        releaseSeconds = oldProp.releaseSeconds
+                        releaseSeconds = oldProp.releaseSeconds,
+                        localBodyCopy = oldProp.localBodyCopy
                     }
                 }
             };

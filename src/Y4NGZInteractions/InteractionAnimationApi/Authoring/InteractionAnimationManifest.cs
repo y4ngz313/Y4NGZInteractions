@@ -230,6 +230,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Authoring
 
             /// <summary>Gets or sets an optional release time; zero retains the prop until stop.</summary>
             public float releaseSeconds;
+
+            /// <summary>
+            /// Gets or sets whether, for the local player, a visual copy of the prop is also attached to
+            /// the full body's bone; cameras that render the local body see the copy instead of the
+            /// first-person prop. The exception is the local player's own gameplay camera, which always
+            /// keeps the first-person prop, even when another mod makes it render the local body.
+            /// </summary>
+            public bool localBodyCopy;
         }
 
         /// <summary>Describes an optional bundle of animation clips.</summary>
