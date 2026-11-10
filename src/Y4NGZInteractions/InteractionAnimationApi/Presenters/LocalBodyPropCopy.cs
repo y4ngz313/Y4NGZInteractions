@@ -7,7 +7,7 @@ using UnityEngine.Rendering;
 namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 {
     /// <summary>
-    /// y4ngz313/Y4NGZUpgrades#806: per-camera visibility of the local player's body-side copy of a
+    /// Per-camera visibility of the local player's body-side copy of a
     /// live-body prop (manifest <c>body.prop.localBodyCopy</c>). The first-person prop rides the arms
     /// rig, which follows the camera container rather than the body, so a camera that renders the
     /// local body (a drone camera, a feed) would show it floating above the body's hands.

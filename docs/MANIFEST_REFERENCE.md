@@ -121,7 +121,7 @@ An enabled clip pack requires a confined bundleFileName and at least one unique 
 
 The attachment path is relative to the arms metarig used by the presenter.
 
-localBodyCopy (default false) also attaches, for the local player only, a visual copy named `Y4NGZ_<prefabAssetName>_BodyInstance` to the same bone on the full body; cameras that render the local body draw the copy instead of the first-person prop, except the local player's own gameplay camera, which always keeps the first-person prop, even when a mod renders the body there (for example a mod that shows the body in first person or moves the gameplay camera for a third-person view). See [Advanced Prop Recipe](ADVANCED_PROP_RECIPE.md).
+localBodyCopy (default false) also attaches, for the local player only, a copy named `Y4NGZ_<prefabAssetName>_BodyInstance` to the same bone on the full body; cameras that render the local body draw the copy instead of the first-person prop, except the local player's own gameplay camera, which always keeps the first-person prop, even when a mod renders the body there (for example a mod that shows the body in first person or moves the gameplay camera for a third-person view). On the copy, joints, rigidbodies and colliders are destroyed and lights and audio sources are disabled; everything else on the prefab (MonoBehaviour scripts, Animators, particle systems, other components) stays active and runs on the copy, so keep scripts with side effects (network calls, sounds, gameplay state, singletons) off a prefab that opts in. See [Advanced Prop Recipe](ADVANCED_PROP_RECIPE.md).
 
 ## Path rules
 
