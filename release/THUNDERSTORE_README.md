@@ -2,7 +2,9 @@
 
 ![About Y4NGZ](https://raw.githubusercontent.com/y4ngz313/Y4NGZMedia/main/shared/about-y4ngz.png)
 
-I am **Y4NGZ**, an up and coming rapper out of NYC/Detroit. All of my mods are inspired by the music I write. I want to thank all of you in the Lethal Company Modding Community for your kind words and support of all of my music. Without you I would never have been able to accomplish any my dream of becoming a full time musician. I will be touring across the global southern hemisphere in Summer 2027. Dates and cities TBA. If there is somewhere you want me to visit please contact me on my [Soundcloud](https://soundcloud.com/y4ngz).
+[![Y4NGZ on YouTube](https://img.shields.io/badge/YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://www.youtube.com/@marylandcollective3007) [![Y4NGZ on Instagram](https://img.shields.io/badge/Instagram-E4405F?style=for-the-badge&logo=instagram&logoColor=white)](https://www.instagram.com/officialy4ngz/) [![Y4NGZ on X](https://img.shields.io/badge/X-000000?style=for-the-badge&logo=x&logoColor=white)](https://x.com/TheKiddY4ngz)
+
+I am **Y4NGZ**, an up and coming rapper out of NYC/Detroit. All of my mods are inspired by the music I write. I want to thank all of you in the Lethal Company Modding Community for your kind words and support of all of my music. Without you I would never have been able to accomplish my dream of becoming a full time musician. I will be touring across the global southern hemisphere in Summer 2027. Dates and cities TBA. If there is somewhere you want me to visit please contact me on my [Soundcloud](https://soundcloud.com/y4ngz).
 
 ## Generative AI usage
 
