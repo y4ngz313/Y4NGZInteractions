@@ -1,6 +1,6 @@
 # API Reference
 
-Last updated: 2026-08-09
+Last updated: 2026-11-14
 
 Namespace: Y4NGZInteractions.InteractionAnimationApi
 
@@ -88,6 +88,8 @@ bool TryStopInteraction(
 
 Queries are presentation-specific. Stopping is always handle-scoped.
 
+TryStopInteraction ends the session, restores the animator and releases the body before it returns. With the `Smooth Blending` config entry on (the default) and a stop reason of Requested, NaturalEnd or PresenterFailure, the player's skin bones then keep the session's last pose and move to the live vanilla pose over the next 0.2 s. Bone reads in that window see the blended pose. A consumer that writes a bone every frame wins: the blend takes the written value as its target. InteractionEnded handlers run with the session's last pose already on the rig. A stop from inside a post-animation callback behaves the same way. A body animator that updates in the physics step never blends. With the entry off, the rig holds the restored vanilla pose when the call returns.
+
 Stop reasons are Requested, NaturalEnd, Interrupted, PlayerInvalidated, PlayerDied, RoundUnloaded, PresenterFailure, and Shutdown.
 
 ## Graceful exit
@@ -110,6 +112,45 @@ bool TryFireInteractionTrigger(handle, parameterName);
 ~~~
 
 Parameter calls apply only to an active handle and return false when the presenter cannot find a compatible parameter.
+
+## Post-animation callback
+
+~~~csharp
+bool TrySetInteractionPostAnimationCallback(
+    InteractionAnimationHandle handle,
+    Action<InteractionAnimationFrame> callback);
+
+readonly struct InteractionAnimationFrame
+{
+    InteractionAnimationHandle Handle { get; }
+    PlayerControllerB Player { get; }
+    InteractionAnimationViewer Viewer { get; }
+    float Weight { get; }
+    float DeltaTime { get; }
+}
+
+enum InteractionAnimationViewer { LocalFirstPerson = 0, LocalThirdPerson = 1, Remote = 2 }
+~~~
+
+The call returns false when the handle is not an active BodyWorld session. A null callback clears it. Weight is the session's eased base weight (0 to 1) before the viewer and yield factors. Viewer uses the viewer rule in the [Manifest Reference](MANIFEST_REFERENCE.md).
+
+The callback runs once per active session per frame, local and remote alike, in session start order. It runs in LateUpdate at script execution order 31000: after vanilla `PlayerControllerB.LateUpdate` and its patches, and after the runtime's own tick, before the camera stabilizers and the visor glue. A session stopped earlier in the frame gets no call.
+
+Inside the callback you may:
+
+- write that player's bone and IK target transforms for this frame;
+- read the animator;
+- call TrySetInteraction* and TryFireInteractionTrigger;
+- call TryStopInteraction or TryBeginInteractionExit on the session's own handle.
+
+Inside the callback you may not:
+
+- assign the controller, call Rebind or Animator.Update;
+- write the weight of a layer the session owns;
+- write the camera, visor, arms root or metarig root;
+- expect a bone write to survive to the next frame, because the animator overwrites it.
+
+A callback that throws is caught, logged once with the handle and the exception, and cleared for that session. The session and every other callback keep running.
 
 ## Completion event
 

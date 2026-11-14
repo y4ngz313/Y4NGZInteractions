@@ -3,13 +3,6 @@ using UnityEngine;
 
 namespace Y4NGZInteractions.InteractionAnimationApi
 {
-    internal enum AnimatorStateRestoreMode
-    {
-        Fresh,
-        Crossfade,
-        Replay
-    }
-
     internal enum AnimatorLayerReplayTarget
     {
         None,
@@ -19,8 +12,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
     internal sealed class AnimatorStateSnapshot
     {
-        private const float CrossfadeDurationSeconds = 0.12f;
-
         private readonly LayerSnapshot[] layers;
         private readonly ParameterSnapshot[] parameters;
 
@@ -215,64 +206,20 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             return AnimatorLayerReplayTarget.None;
         }
 
-        public bool Restore(Animator animator)
-        {
-            return Restore(animator, RuntimeAnimatorController);
-        }
-
-        public bool Restore(Animator animator, RuntimeAnimatorController expectedCurrentController)
-        {
-            return Restore(animator, expectedCurrentController, rebindAnimator: true);
-        }
-
-        public bool Restore(
-            Animator animator,
-            RuntimeAnimatorController expectedCurrentController,
-            bool rebindAnimator)
-        {
-            return Restore(
-                animator,
-                expectedCurrentController,
-                rebindAnimator,
-                AnimatorStateRestoreMode.Replay);
-        }
-
-        public bool Restore(
-            Animator animator,
-            RuntimeAnimatorController expectedCurrentController,
-            bool rebindAnimator,
-            AnimatorStateRestoreMode restoreMode)
-        {
-            return Restore(
-                animator,
-                expectedCurrentController,
-                rebindAnimator,
-                restoreMode,
-                syncParametersBeforeStateReplay: null,
-                restoreBaseLayerState: true);
-        }
-
         /// <param name="animator">Animator whose captured state is restored.</param>
         /// <param name="expectedCurrentController">
         /// Controller that must still be owned before restoration proceeds.
         /// </param>
-        /// <param name="rebindAnimator">Whether to rebind before replaying captured state.</param>
-        /// <param name="restoreMode">Controls which captured layers and transitions replay.</param>
+        /// <param name="rebindAnimator">Whether to rebind before rewriting captured parameters.</param>
         /// <param name="syncParametersBeforeStateReplay">
-        /// Invoked after the captured parameters are rewritten but BEFORE any forced state
-        /// replay and the zero-delta Animator.Update. Lets the caller overwrite stale
-        /// transition-gated locomotion parameters ("Walking", "crouching", "Jumping") with the
-        /// player's CURRENT state so the replayed frame is not driven by equip-time values.
-        /// </param>
-        /// <param name="restoreBaseLayerState">
-        /// False skips the forced Play/CrossFade of the captured base-layer (layer 0) state —
-        /// used when the player's stance changed during the session, so the freshly synced
-        /// parameters drive layer 0 instead of a stale crouch/stand pose. Other layers and the
-        /// base-layer weight are restored as usual.
+        /// Invoked after the captured parameters are rewritten but BEFORE the layer weights and
+        /// the zero-delta Animator.Update. Lets the caller overwrite stale transition-gated
+        /// locomotion parameters ("Walking", "crouching", "Jumping") with the player's CURRENT
+        /// state so the restored frame is not driven by equip-time values.
         /// </param>
         /// <param name="afterControllerAssigned">
         /// Invoked immediately after the captured controller is re-assigned (and after the
-        /// optional Rebind), BEFORE any parameter rewrite, layer-state replay, or the final
+        /// optional Rebind), BEFORE the parameter rewrite, the layer weights, or the final
         /// zero-delta Update. The re-assignment defers Unity's write-defaults capture to the
         /// next evaluation, so this is the caller's one chance to normalize the pose and burn
         /// an evaluation in the controller's default (standing) state — otherwise the capture
@@ -283,9 +230,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             Animator animator,
             RuntimeAnimatorController expectedCurrentController,
             bool rebindAnimator,
-            AnimatorStateRestoreMode restoreMode,
             Action syncParametersBeforeStateReplay,
-            bool restoreBaseLayerState,
             Action afterControllerAssigned = null)
         {
             if (animator == null)
@@ -322,8 +267,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 }
 
                 // Overwrite stale transition-gated locomotion parameters from live player state
-                // before the forced state replay below evaluates — otherwise the equip-time
-                // values captured above drive the replayed frame.
+                // before the zero-delta update below evaluates — otherwise the equip-time values
+                // captured above drive the restored frame.
                 if (syncParametersBeforeStateReplay != null)
                 {
                     try { syncParametersBeforeStateReplay(); } catch { }
@@ -331,29 +276,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
                 int layerCount = Math.Min(animator.layerCount, layers.Length);
                 for (int i = 0; i < layerCount; i++)
-                {
-                    LayerSnapshot layer = layers[i];
-                    animator.SetLayerWeight(i, layer.Weight);
-
-                    if (i == 0 && !restoreBaseLayerState)
-                        continue;
-
-                    if (layer.FullPathHash != 0)
-                    {
-                        if (restoreMode == AnimatorStateRestoreMode.Crossfade)
-                        {
-                            animator.CrossFadeInFixedTime(
-                                layer.FullPathHash,
-                                CrossfadeDurationSeconds,
-                                i,
-                                Mathf.Repeat(layer.NormalizedTime, 1f));
-                        }
-                        else if (restoreMode == AnimatorStateRestoreMode.Replay)
-                        {
-                            animator.Play(layer.FullPathHash, i, layer.NormalizedTime);
-                        }
-                    }
-                }
+                    animator.SetLayerWeight(i, layers[i].Weight);
 
                 animator.Update(0f);
                 return true;

@@ -89,6 +89,50 @@ The camera fields have separate meanings:
 - stabilizeLocalCameraPosition explicitly pins only the gameplay camera's player-local position for the session while leaving mouse-look rotation live. Use it only when the authored controller temporarily moves a camera parent.
 - localCameraOwnedExternally declares that another system owns the local camera and visor. That explicit ownership declaration makes the presenter's first-person camera and visor behavior stand down; the other three field values are not treated as ownership signals.
 
+## Layer fades and the exit pose blend
+
+layerWeightRampSeconds (startLayerWeight to 1), enterLayerFadeSeconds (0 to the layer's weight), naturalEndLayerFadeSeconds and exitSeconds (each layer's last base weight, before the viewer and yield factors, to 0) default to 0, which is instant. With the `Smooth Blending` config entry on (the default), each fade follows a smoothstep curve, 3t² − 2t³. With it off, each fade is a straight line. The entry is read once per session, when the session starts.
+
+With `Smooth Blending` on, a BodyWorld interaction that ends with stop reason Requested, NaturalEnd or PresenterFailure also blends the player's skin bones from the session's last pose into the live vanilla pose over 0.2 s. The duration is fixed; there is no manifest field. Interrupted, death, invalidation, round unload and shutdown stops do not blend, and neither does a body animator that updates in the physics step. A DedicatedLocalViewmodel does not blend. See [Architecture](ARCHITECTURE.md).
+
+A shell controller should keep vanilla's six layers under its custom layers, with vanilla's names: Base Layer, EmotesNoArms, HoldingItemsRightHand, UpperBodyEmotes, HoldingItemsBothHands and SpecialAnimations. `body.layers` cannot name them, so entries there never write their weights; vanilla does. The yields and the live exit then show vanilla.
+
+## Layers
+
+body.layers (schema 2 only, optional) lists extra named controller layers beyond fullBodyLayer and firstPersonArmsLayer. Absent means those two layers only. Each entry:
+
+~~~json
+"layers": [
+  { "name": "Hands", "viewers": ["localFirstPerson"], "weight": -1, "yieldTo": ["sprint", "handsOnWall"] }
+]
+~~~
+
+| Field | Type | Default | Rule |
+| --- | --- | --- | --- |
+| name | string | required | Controller layer name; the first layer with that name is used. An entry whose name resolves to layer 0, or to a layer an earlier entry already drives, is skipped with one warning per session |
+| viewers | string[] | all three | Any of localFirstPerson, localThirdPerson, remote. Present and empty, or null, is an error |
+| weight | float | -1 | Exactly -1 follows the session ramp; 0 to 1 pins the base weight. Fades apply either way |
+| yieldTo | string[] | none | Any of sprint, handsOnWall |
+
+At most 8 entries. Names are unique across fullBodyLayer, firstPersonArmsLayer and layers. Those two fields keep their own rules and count as the first two layers, for all viewers and with no yield; they are always kept when the controller has them.
+
+| Code | Rule |
+| --- | --- |
+| manifest_body_layer_count_invalid | More than 8 entries |
+| manifest_body_layer_name_missing | Empty or whitespace name |
+| manifest_body_layer_reserved | A vanilla layer name (the six above) |
+| manifest_body_layer_duplicate | A name used twice across fullBodyLayer, firstPersonArmsLayer and layers |
+| manifest_body_layer_viewers_empty | viewers is present and empty, or null |
+| manifest_body_layer_viewer_invalid | Unknown viewer |
+| manifest_body_layer_yield_invalid | Unknown yield |
+| manifest_body_layer_weight_invalid | Not -1 and outside 0 to 1, or not finite |
+| manifest_unknown_field | Unknown field in an entry, at `$.body.layers[i].<field>` |
+| manifest_field_requires_schema_2 | body.layers in a schema-1 manifest |
+
+**Viewer rule.** Evaluated once per session per frame. remote: the session's player is not the local player. localThirdPerson: the local player whose body model is drawn (enabled and not shadows-only). localFirstPerson: the local player otherwise. One skeleton holds one pose per frame, so the rule is per frame, not per camera. When the viewer changes, each layer's viewer factor moves to 0 or 1 over 0.1 s. At session start it begins at its target.
+
+**Yield rule.** A layer's effective weight is base weight × viewer factor × (1 − max(sprint yield, wall yield)). The sprint yield rises to 1 over 0.1 s while the player sprints, and falls back when the sprint ends. On a remote body, sprinting comes from the replicated position change. The wall yield is vanilla's hands-on-wall weight (0 to 1). Lowering a layer shows what is under it: sprint shows the base layer's arms; hands-on-wall shows the shell's UpperBodyEmotes layer (a shell without it shows its base layer). A layer without yieldTo never yields. With `Smooth Blending` off, the factor changes are straight lines.
+
 ## Clip packs
 
 An enabled clip pack requires a confined bundleFileName and at least one unique slot-to-clip mapping.
@@ -132,5 +176,7 @@ Bundle paths must be trimmed, relative, slash-separated, and confined to AssetRo
 Schema-1 JSON is parsed through an internal compatibility DTO, normalized to schema 2, and accepted for the 1.x line with warning manifest_schema_1_migrated. Legacy-only fields never appear on the public schema-2 DTO.
 
 Migration maps legacy stabilizeLocalCameraPosition and localCameraOwnedExternally directly, maps exemptFromCameraDisplacementGuard to the inverse of stopOnGameplayCameraDisplacement, and preserves camera seams unless the legacy manifest explicitly declared external camera ownership. A schema-1 consumer that omitted stabilization does not acquire a position pin.
+
+When a schema-1 manifest omits a key, the key takes its documented default (for example schemaVersion, cameraAnchor, cameraLocalPosition, localScale, startLayerWeight, fullBodyLayerWeight, suppressRigBuilders and prop localScale), not the zero value of its type. A schema-1 manifest that omits suppressRigBuilders therefore has suppressRigBuilders true, which sets rebuildRigBuilders to false. body.layers is schema 2 only; a schema-1 manifest with body.layers is rejected with manifest_field_requires_schema_2.
 
 Schema 2 removes frameRate, root displayName, localViewmodel.root, runtimeMaterialMode, sockets, body.clip, diagnostic override fields, validation metadata, and low-level restoration toggles. See [1.0 Migration Guide](MIGRATION_1_0.md).

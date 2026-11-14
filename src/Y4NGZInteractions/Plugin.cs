@@ -47,6 +47,9 @@ namespace Y4NGZInteractions
                 "Interaction Animation API Restoration",
                 () => InteractionAnimationApiRestoreDiagnostics.Initialize(Config, Logger));
             InitializeModule(
+                "Interaction Animation API Blending",
+                () => BlendingSettings.Initialize(Config, Logger));
+            InitializeModule(
                 "Interaction Animation API Spawn Hooks",
                 () => harmony.PatchAll());
 

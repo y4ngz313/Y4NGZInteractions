@@ -79,6 +79,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Authoring
             {
                 if (schemaVersion == 1)
                 {
+                    // Schema-1 parsing ignores unknown keys, so a schema-2-only field is
+                    // rejected here instead of being dropped.
+                    if (root["body"] is JObject legacyBody && legacyBody.Property("layers") != null)
+                    {
+                        AddError(issues, "manifest_field_requires_schema_2", "$.body.layers",
+                            "body.layers requires schemaVersion 2.");
+                        return new InteractionAnimationValidationReport(issues);
+                    }
                     manifest = LegacyInteractionAnimationMigration.Normalize(
                         root.ToObject<LegacyInteractionAnimationManifest>());
                     issues.Add(new InteractionAnimationValidationIssue(
@@ -211,6 +219,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Authoring
                 "exitTrigger",
                 "fullBodyLayer",
                 "firstPersonArmsLayer",
+                "layers",
                 "startLayerWeight",
                 "layerWeightRampSeconds",
                 "fullBodyLayerWeight",
@@ -226,6 +235,33 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Authoring
                 "stopOnVanillaSpecialAnimation",
                 "clipPack",
                 "prop");
+
+            if (body["layers"] is JArray layers)
+            {
+                for (int i = 0; i < layers.Count; i++)
+                {
+                    if (!(layers[i] is JObject layer))
+                        continue;
+                    string layerPath = bodyPath + ".layers[" + i + "]";
+                    ValidateProperties(
+                        layer,
+                        layerPath,
+                        issues,
+                        "name",
+                        "viewers",
+                        "weight",
+                        "yieldTo");
+                    // The DTO reads an absent list as every viewer, so a list written without
+                    // any viewer is rejected from the raw token.
+                    JToken viewers = layer["viewers"];
+                    if (viewers != null &&
+                        (viewers.Type == JTokenType.Null || viewers is JArray { Count: 0 }))
+                    {
+                        AddError(issues, "manifest_body_layer_viewers_empty", layerPath + ".viewers",
+                            "viewers must name at least one viewer when present.");
+                    }
+                }
+            }
 
             if (body["clipPack"] is JObject clipPack)
             {
@@ -409,6 +445,68 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Authoring
                 "manifest_body_exit_seconds_invalid", issues);
             ValidateClipPack(body.clipPack, issues);
             ValidateProp(body.prop, issues);
+            ValidateLayers(body, issues);
+        }
+
+        private static void ValidateLayers(
+            InteractionAnimationManifest.BodyManifest body,
+            IList<InteractionAnimationValidationIssue> issues)
+        {
+            InteractionAnimationManifest.LayerManifest[] layers = body.layers;
+            if (layers == null || layers.Length == 0)
+                return;
+            if (layers.Length > InteractionAnimationLayerSpecs.MaxLayers)
+                AddError(issues, "manifest_body_layer_count_invalid", "$.body.layers",
+                    "body.layers may list at most " + InteractionAnimationLayerSpecs.MaxLayers +
+                    " entries.");
+
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            if (!string.IsNullOrWhiteSpace(body.fullBodyLayer))
+                names.Add(body.fullBodyLayer);
+            if (!string.IsNullOrWhiteSpace(body.firstPersonArmsLayer))
+                names.Add(body.firstPersonArmsLayer);
+            for (int i = 0; i < layers.Length; i++)
+            {
+                string path = "$.body.layers[" + i + "]";
+                InteractionAnimationManifest.LayerManifest layer = layers[i];
+                if (layer == null)
+                {
+                    AddError(issues, "manifest_body_layer_name_missing", path,
+                        "Each layer requires a controller layer name.");
+                    continue;
+                }
+                if (string.IsNullOrWhiteSpace(layer.name))
+                    AddError(issues, "manifest_body_layer_name_missing", path + ".name",
+                        "Each layer requires a controller layer name.");
+                else if (InteractionAnimationLayerSpecs.IsReservedLayerName(layer.name))
+                    AddError(issues, "manifest_body_layer_reserved", path + ".name",
+                        "Vanilla player layers cannot be listed in body.layers.");
+                else if (!names.Add(layer.name))
+                    AddError(issues, "manifest_body_layer_duplicate", path + ".name",
+                        "Layer names must be unique across fullBodyLayer, firstPersonArmsLayer and layers.");
+
+                string[] viewers = layer.viewers ?? Array.Empty<string>();
+                for (int j = 0; j < viewers.Length; j++)
+                {
+                    if (!InteractionAnimationLayerSpecs.TryParseViewer(viewers[j], out _))
+                        AddError(issues, "manifest_body_layer_viewer_invalid",
+                            path + ".viewers[" + j + "]",
+                            "Viewers are localFirstPerson, localThirdPerson and remote.");
+                }
+                string[] yieldTo = layer.yieldTo ?? Array.Empty<string>();
+                for (int j = 0; j < yieldTo.Length; j++)
+                {
+                    if (!InteractionAnimationLayerSpecs.TryParseYield(yieldTo[j], out _))
+                        AddError(issues, "manifest_body_layer_yield_invalid",
+                            path + ".yieldTo[" + j + "]",
+                            "Yields are sprint and handsOnWall.");
+                }
+                if (!IsFinite(layer.weight) ||
+                    (layer.weight != InteractionAnimationLayerSpecs.FollowRampWeight &&
+                     (layer.weight < 0f || layer.weight > 1f)))
+                    AddError(issues, "manifest_body_layer_weight_invalid", path + ".weight",
+                        "weight must be -1 to follow the session ramp or between 0 and 1.");
+            }
         }
 
         private static void ValidateClipPack(

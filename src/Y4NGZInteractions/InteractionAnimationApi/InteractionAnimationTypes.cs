@@ -274,6 +274,58 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         public InteractionAnimationStopReason StopReason { get; }
     }
 
+    /// <summary>Identifies who sees an interaction's body this frame.</summary>
+    public enum InteractionAnimationViewer
+    {
+        /// <summary>The local player in first person.</summary>
+        LocalFirstPerson = 0,
+
+        /// <summary>The local player with its own body visible, such as a third-person camera.</summary>
+        LocalThirdPerson = 1,
+
+        /// <summary>Another client's player.</summary>
+        Remote = 2
+    }
+
+    /// <summary>
+    /// Per-frame data passed to a post-animation callback, after the animator and every
+    /// default-order LateUpdate have run for the frame.
+    /// </summary>
+    public readonly struct InteractionAnimationFrame
+    {
+        internal InteractionAnimationFrame(
+            InteractionAnimationHandle handle,
+            PlayerControllerB player,
+            InteractionAnimationViewer viewer,
+            float weight,
+            float deltaTime)
+        {
+            Handle = handle;
+            Player = player;
+            Viewer = viewer;
+            Weight = weight;
+            DeltaTime = deltaTime;
+        }
+
+        /// <summary>Gets the session handle.</summary>
+        public InteractionAnimationHandle Handle { get; }
+
+        /// <summary>Gets the player the session presents.</summary>
+        public PlayerControllerB Player { get; }
+
+        /// <summary>Gets who sees the session's body this frame.</summary>
+        public InteractionAnimationViewer Viewer { get; }
+
+        /// <summary>
+        /// Gets the session's eased base weight, 0 to 1: its ramp, enter, natural-end and exit
+        /// fades, before viewer and yield factors.
+        /// </summary>
+        public float Weight { get; }
+
+        /// <summary>Gets the frame's delta time in seconds.</summary>
+        public float DeltaTime { get; }
+    }
+
     internal sealed class InteractionAnimationContext
     {
         internal InteractionAnimationContext(

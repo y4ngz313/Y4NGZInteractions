@@ -15,7 +15,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi
     internal static class InteractionAnimationApiRestoreDiagnostics
     {
         internal const string ConfigSection = "Interaction Animation API Restore Diagnostics";
-        internal const string DefaultRestoreStateMode = "fresh";
 
         private const int RestoreHistoryFrames = 3;
         private const int RestoreFutureFrames = 6;
@@ -79,7 +78,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         private static ConfigEntry<bool> enableExternalCameraPresentationLogger;
         private static ConfigEntry<bool> enableRemoteRigDiffProbe;
         private static ConfigEntry<bool> enableIkBakeProbe;
-        private static ConfigEntry<string> restoreStateMode;
         private static ConfigEntry<bool> enableArmsMetarigWriteBackOwner;
         private static ConfigEntry<bool> enableMetarigRootWriteBackOwner;
         private static ConfigEntry<bool> enableMovementStartProbe;
@@ -134,7 +132,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         private static bool samplerFailureLogged;
         private static bool twoBoneIkTypeUnavailableLogged;
         private static bool chainIkTypeUnavailableLogged;
-        private static bool invalidRestoreStateModeWarningLogged;
         private static bool prepareForLiveBodyStartUninitializedLogged;
         private static bool remoteRigProbeSessionBeginUninitializedLogged;
         private static bool playerAwakeCaptureUninitializedLogged;
@@ -206,38 +203,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
         internal static bool MovementStartProbeEnabled =>
             initialized && ReadEnabled(enableMovementStartProbe, false);
-
-        internal static AnimatorStateRestoreMode ReadRestoreStateMode()
-        {
-            string configuredMode;
-            try
-            {
-                configuredMode = restoreStateMode != null
-                    ? restoreStateMode.Value
-                    : DefaultRestoreStateMode;
-            }
-            catch
-            {
-                configuredMode = DefaultRestoreStateMode;
-            }
-
-            if (string.Equals(configuredMode, "fresh", StringComparison.OrdinalIgnoreCase))
-                return AnimatorStateRestoreMode.Fresh;
-            if (string.Equals(configuredMode, "crossfade", StringComparison.OrdinalIgnoreCase))
-                return AnimatorStateRestoreMode.Crossfade;
-            if (string.Equals(configuredMode, "replay", StringComparison.OrdinalIgnoreCase))
-                return AnimatorStateRestoreMode.Replay;
-
-            if (!invalidRestoreStateModeWarningLogged)
-            {
-                invalidRestoreStateModeWarningLogged = true;
-                logger?.LogWarning(
-                    "[RestoreSeam.mode] invalid Restore State Mode " +
-                    $"'{configuredMode ?? "<null>"}'; using '{DefaultRestoreStateMode}'.");
-            }
-
-            return AnimatorStateRestoreMode.Fresh;
-        }
 
         internal static void Initialize(ConfigFile config, ManualLogSource log)
         {
@@ -357,13 +322,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     "Enable IK Bake Probe",
                     true,
                     "When enabled, the ChainIK and TwoBoneIK constraints under the local player's first-person arms metarig are sampled at four checkpoints per live-body session (first PlayerControllerB.Awake, immediately before the start rebuild, immediately before the restore rebuild, and two LateUpdates after restore) and each sample logs the world-space link distances, maxReach, and tip-versus-target offsets that RigBuilder.Build() bakes permanently into its job arrays. A link distance or bone lossy scale below 0.001 at either pre-build checkpoint raises a warning, because that bake outlives the session and leaves the affected limb mispositioned in vanilla animation. Four compact rounds per session; safe to leave on.");
-                restoreStateMode = config.Bind(
-                    ConfigSection,
-                    "Restore State Mode",
-                    DefaultRestoreStateMode,
-                    new ConfigDescription(
-                        "Selects how vanilla animator layer states resume at live-body Stop: fresh starts from controller defaults, crossfade blends to captured states, and replay immediately restores captured states.",
-                        new AcceptableValueList<string>("fresh", "crossfade", "replay")));
                 enableArmsMetarigWriteBackOwner = config.Bind(
                     ConfigSection,
                     "Own Arms Metarig Write-Back",
@@ -519,7 +477,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             samplerFailureLogged = false;
             twoBoneIkTypeUnavailableLogged = false;
             chainIkTypeUnavailableLogged = false;
-            invalidRestoreStateModeWarningLogged = false;
             prepareForLiveBodyStartUninitializedLogged = false;
             remoteRigProbeSessionBeginUninitializedLogged = false;
             playerAwakeCaptureUninitializedLogged = false;
@@ -552,7 +509,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             enableExternalCameraPresentationLogger = null;
             enableRemoteRigDiffProbe = null;
             enableIkBakeProbe = null;
-            restoreStateMode = null;
             logger = null;
         }
 
