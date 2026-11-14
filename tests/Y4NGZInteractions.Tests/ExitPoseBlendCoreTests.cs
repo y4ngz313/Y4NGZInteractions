@@ -233,17 +233,8 @@ public sealed class ExitPoseBlendCoreTests : IDisposable
     }
 
     [Fact]
-    public void ArmingNeedsQualifyingReasonRestoredAnimatedVisibleLivingBody()
+    public void ArmingNeedsRestoredAnimatedVisibleLivingBody()
     {
-        Assert.True(ExitPoseBlendRules.QualifiesForArming(InteractionAnimationStopReason.Requested));
-        Assert.True(ExitPoseBlendRules.QualifiesForArming(InteractionAnimationStopReason.NaturalEnd));
-        Assert.True(ExitPoseBlendRules.QualifiesForArming(InteractionAnimationStopReason.PresenterFailure));
-        Assert.False(ExitPoseBlendRules.QualifiesForArming(InteractionAnimationStopReason.Interrupted));
-        Assert.False(ExitPoseBlendRules.QualifiesForArming(InteractionAnimationStopReason.PlayerDied));
-        Assert.False(ExitPoseBlendRules.QualifiesForArming(InteractionAnimationStopReason.PlayerInvalidated));
-        Assert.False(ExitPoseBlendRules.QualifiesForArming(InteractionAnimationStopReason.RoundUnloaded));
-        Assert.False(ExitPoseBlendRules.QualifiesForArming(InteractionAnimationStopReason.Shutdown));
-
         Assert.True(ExitPoseBlendRules.CanArm(true, true, false, false, false, 12));
         Assert.False(ExitPoseBlendRules.CanArm(false, true, false, false, false, 12));
         Assert.False(ExitPoseBlendRules.CanArm(true, false, false, false, false, 12));
@@ -257,37 +248,214 @@ public sealed class ExitPoseBlendCoreTests : IDisposable
         Assert.False(ExitPoseBlendRules.IsCulled(alwaysAnimate: false, anyRendererVisible: true));
     }
 
+    [Theory]
+    [InlineData(InteractionAnimationStopReason.Requested, true, true)]
+    [InlineData(InteractionAnimationStopReason.Requested, false, true)]
+    [InlineData(InteractionAnimationStopReason.NaturalEnd, true, true)]
+    [InlineData(InteractionAnimationStopReason.NaturalEnd, false, true)]
+    [InlineData(InteractionAnimationStopReason.PresenterFailure, true, true)]
+    [InlineData(InteractionAnimationStopReason.PresenterFailure, false, true)]
+    [InlineData(InteractionAnimationStopReason.Interrupted, true, true)]
+    [InlineData(InteractionAnimationStopReason.Interrupted, false, false)]
+    [InlineData(InteractionAnimationStopReason.PlayerDied, true, false)]
+    [InlineData(InteractionAnimationStopReason.PlayerInvalidated, true, false)]
+    [InlineData(InteractionAnimationStopReason.RoundUnloaded, true, false)]
+    [InlineData(InteractionAnimationStopReason.Shutdown, true, false)]
+    public void StopQualifiesByReasonAndInterruptedOnlyWhileThePlayerIsControlled(
+        InteractionAnimationStopReason reason,
+        bool playerControlled,
+        bool qualifies)
+    {
+        Assert.Equal(qualifies, ExitPoseBlendRules.QualifiesForArming(reason, suspend: false, playerControlled));
+        Assert.False(ExitPoseBlendRules.QualifiesForArming(reason, suspend: true, playerControlled));
+    }
+
+    [Fact]
+    public void SuspendStopCapturesNothingAndTheNextStopIsNotASuspend()
+    {
+        PlayerControllerB player = Player(controlled: true);
+
+        Assert.Equal(0, CountRigResolves(() => Assert.Null(ExitPoseBlend.CaptureStartPose(
+            player, null, InteractionAnimationStopReason.Interrupted, suspend: true))));
+        Assert.Equal(1, CountRigResolves(() => Assert.Null(ExitPoseBlend.CaptureStartPose(
+            player, null, InteractionAnimationStopReason.Interrupted, suspend: false))));
+        Assert.Equal(0, ExitPoseBlend.LiveCount);
+        Assert.False(ExitPoseBlend.RunnerEnabled);
+    }
+
     [Fact]
     public void SwitchOffOrNonQualifyingStopNeverResolvesBonesCapturesOrEnablesRunner()
     {
-        var player = (PlayerControllerB)RuntimeHelpers.GetUninitializedObject(typeof(PlayerControllerB));
-        Func<PlayerControllerB, ExitPoseBlendRig> original = ExitPoseBlend.RigResolver;
-        int resolverCalls = 0;
-        ExitPoseBlend.RigResolver = _ =>
-        {
-            resolverCalls++;
-            return null;
-        };
-        try
-        {
-            BlendingSettings.SmoothBlending = false;
-            Assert.Null(ExitPoseBlend.CaptureStartPose(player, null, InteractionAnimationStopReason.Requested));
-            ExitPoseBlend.Arm(null, animatorRestored: true);
-            Assert.Equal(0, resolverCalls);
-            Assert.Equal(0, ExitPoseBlend.LiveCount);
-            Assert.False(ExitPoseBlend.RunnerEnabled);
+        PlayerControllerB controlled = Player(controlled: true);
+        PlayerControllerB uncontrolled = Player(controlled: false);
 
-            BlendingSettings.SmoothBlending = true;
-            Assert.Null(ExitPoseBlend.CaptureStartPose(player, null, InteractionAnimationStopReason.Interrupted));
-            Assert.Equal(0, resolverCalls);
-            Assert.Null(ExitPoseBlend.CaptureStartPose(player, null, InteractionAnimationStopReason.Requested));
-            Assert.Equal(1, resolverCalls);
-            Assert.False(ExitPoseBlend.RunnerEnabled);
-        }
-        finally
+        BlendingSettings.SmoothBlending = false;
+        Assert.Equal(0, CountRigResolves(() =>
         {
-            ExitPoseBlend.RigResolver = original;
-        }
+            Assert.Null(ExitPoseBlend.CaptureStartPose(
+                controlled, null, InteractionAnimationStopReason.Requested, suspend: false));
+            Assert.Null(ExitPoseBlend.CaptureStartPose(
+                controlled, null, InteractionAnimationStopReason.Interrupted, suspend: false));
+            ExitPoseBlend.Arm(null, animatorRestored: true);
+        }));
+        Assert.Equal(0, ExitPoseBlend.LiveCount);
+        Assert.False(ExitPoseBlend.RunnerEnabled);
+
+        BlendingSettings.SmoothBlending = true;
+        Assert.Equal(0, CountRigResolves(() =>
+        {
+            Assert.Null(ExitPoseBlend.CaptureStartPose(
+                controlled, null, InteractionAnimationStopReason.PlayerDied, suspend: false));
+            Assert.Null(ExitPoseBlend.CaptureStartPose(
+                uncontrolled, null, InteractionAnimationStopReason.Interrupted, suspend: false));
+        }));
+        Assert.Equal(2, CountRigResolves(() =>
+        {
+            Assert.Null(ExitPoseBlend.CaptureStartPose(
+                uncontrolled, null, InteractionAnimationStopReason.Requested, suspend: false));
+            Assert.Null(ExitPoseBlend.CaptureStartPose(
+                controlled, null, InteractionAnimationStopReason.Interrupted, suspend: false));
+        }));
+        Assert.False(ExitPoseBlend.RunnerEnabled);
+    }
+
+    [Theory]
+    [InlineData(InteractionAnimationStopReason.Requested)]
+    [InlineData(InteractionAnimationStopReason.NaturalEnd)]
+    [InlineData(InteractionAnimationStopReason.Interrupted)]
+    [InlineData(InteractionAnimationStopReason.PresenterFailure)]
+    [InlineData(InteractionAnimationStopReason.PlayerInvalidated)]
+    [InlineData(InteractionAnimationStopReason.PlayerDied)]
+    [InlineData(InteractionAnimationStopReason.RoundUnloaded)]
+    [InlineData(InteractionAnimationStopReason.Shutdown)]
+    public void DeadPlayerNeverArmsWhateverTheReason(InteractionAnimationStopReason reason)
+    {
+        Assert.False(Arms(reason, playerDead: true));
+    }
+
+    [Fact]
+    public void BlendArmedBeforeTheBodyDiesReleasesAndTheDeadBodyNeverArms()
+    {
+        Assert.False(Arms(InteractionAnimationStopReason.Interrupted, playerDead: true, culled: true));
+
+        Quaternion restored = YRotation(40f);
+        SimulatedRig rig = ArmTwoBones(restored);
+        rig.PrePass();
+        Vector3 deathPose = V(0f, 2f, 0f);
+        rig.DrivePosition(1, deathPose);
+
+        Assert.Equal(ExitPoseBlendPassDecision.Release, DecideLivePass(playerDead: true));
+        rig.Cancel(ExitPoseBlendCancelKind.Release);
+
+        AssertPosition(V(1f, 0f, 0f), rig.Positions[0]);
+        AssertPosition(deathPose, rig.Positions[1]);
+        Assert.True(ExitPoseBlendCore.SameExact(restored, rig.Rotations[1]));
+        Assert.False(rig.Core.IsLive);
+    }
+
+    [Fact]
+    public void InterruptedStopAfterDisconnectArmsNothingAndBeforeItReleasesOnLostControl()
+    {
+        Assert.False(Arms(InteractionAnimationStopReason.Interrupted, playerControlled: false));
+        Assert.True(Arms(InteractionAnimationStopReason.Interrupted, playerControlled: true));
+
+        Quaternion restored = YRotation(40f);
+        SimulatedRig rig = ArmTwoBones(restored);
+        rig.PrePass();
+        Assert.All(rig.Core.WritePositions, write => Assert.True(write));
+        Assert.All(rig.Core.WriteRotations, write => Assert.True(write));
+        AssertRestorePose(rig, restored);
+
+        Assert.Equal(ExitPoseBlendPassDecision.Release, DecideLivePass(playerLostControl: true));
+        rig.Cancel(ExitPoseBlendCancelKind.Release);
+
+        AssertRestorePose(rig, restored);
+        Assert.False(rig.Core.IsLive);
+        rig.PrePass();
+        AssertNothingWritten(rig);
+    }
+
+    [Fact]
+    public void RoundChangeAfterArmReleasesAndASameRoundInterruptedStopBlendsToItsEnd()
+    {
+        Assert.True(Arms(InteractionAnimationStopReason.Interrupted));
+        Quaternion restored = YRotation(40f);
+
+        SimulatedRig changed = ArmTwoBones(restored);
+        changed.PrePass();
+        Assert.Equal(ExitPoseBlendPassDecision.Release, DecideLivePass(roundChanged: true));
+        changed.Cancel(ExitPoseBlendCancelKind.Release);
+        AssertRestorePose(changed, restored);
+        Assert.False(changed.Core.IsLive);
+
+        Assert.Equal(ExitPoseBlendPassDecision.Step, DecideLivePass());
+        SimulatedRig same = ArmTwoBones(restored);
+        same.PrePass();
+        Assert.False(same.Pass(2, 0.1f));
+        Assert.Equal(0.5f, same.Positions[0].x, 6);
+        same.PrePass();
+        Assert.True(same.Pass(3, 0.1f));
+        AssertRestorePose(same, restored);
+    }
+
+    [Fact]
+    public void HiddenOrInactiveBodyAtStopArmsNothingAndHidingAfterArmReleases()
+    {
+        Assert.False(Arms(InteractionAnimationStopReason.Interrupted, animatorActive: false));
+        Assert.False(Arms(InteractionAnimationStopReason.Interrupted, culled: true));
+        Assert.Equal(ExitPoseBlendPassDecision.Release, DecideLivePass(animatorActive: false));
+        Assert.Equal(ExitPoseBlendPassDecision.Release, DecideLivePass(culled: true));
+
+        Quaternion restored = YRotation(40f);
+        SimulatedRig rig = ArmTwoBones(restored);
+        rig.PrePass();
+        rig.Pass(2, 0.05f);
+        rig.Cancel(ExitPoseBlendCancelKind.Release);
+
+        AssertRestorePose(rig, restored);
+        Assert.False(rig.Core.IsLive);
+    }
+
+    [Fact]
+    public void ShutdownStopArmsNothingAndShutdownGivesEveryLiveBlendItsFinalValues()
+    {
+        Assert.False(Arms(InteractionAnimationStopReason.Shutdown));
+
+        Quaternion restored = YRotation(40f);
+        SimulatedRig beforePass = ArmTwoBones(restored);
+        SimulatedRig afterPass = ArmTwoBones(restored);
+        afterPass.PrePass();
+        afterPass.DrivePosition(1, V(0f, 2f, 0f));
+        afterPass.Pass(2, 0.05f);
+
+        // ExitPoseBlend.Shutdown cancels every live blend as before a new session.
+        beforePass.Cancel(ExitPoseBlendCancelKind.BeforeNewSession);
+        afterPass.Cancel(ExitPoseBlendCancelKind.BeforeNewSession);
+        ExitPoseBlend.Shutdown();
+
+        AssertRestorePose(beforePass, restored);
+        AssertPosition(V(1f, 0f, 0f), afterPass.Positions[0]);
+        AssertPosition(V(0f, 2f, 0f), afterPass.Positions[1]);
+        Assert.True(ExitPoseBlendCore.SameExact(restored, afterPass.Rotations[1]));
+        Assert.False(beforePass.Core.IsLive);
+        Assert.False(afterPass.Core.IsLive);
+        Assert.Equal(0, ExitPoseBlend.LiveCount);
+        Assert.False(ExitPoseBlend.RunnerEnabled);
+    }
+
+    [Fact]
+    public void SameFrameInterruptedStopThenStartPutsRestorePoseOnEveryBoneBeforeCapture()
+    {
+        Assert.True(Arms(InteractionAnimationStopReason.Interrupted));
+
+        Quaternion restored = YRotation(40f);
+        SimulatedRig rig = ArmTwoBones(restored);
+        rig.Cancel(ExitPoseBlendCancelKind.BeforeNewSession);
+
+        Assert.All(rig.Core.WritePositions, write => Assert.True(write));
+        Assert.All(rig.Core.WriteRotations, write => Assert.True(write));
+        AssertRestorePose(rig, restored);
+        Assert.False(rig.Core.IsLive);
     }
 
     [Fact]
@@ -343,9 +511,11 @@ public sealed class ExitPoseBlendCoreTests : IDisposable
     [Fact]
     public void ArmAfterTheFramesPassRendersStopPoseThenStepsFromThePrePassNextFrame()
     {
+        RunIdlePrePass(7);
+        Assert.True(ExitPoseBlend.AnimationPassRan(7));
         var rig = new SimulatedRig(V(0f, 0f, 0f), V(0f, 0f, 0f));
 
-        rig.Arm(7, V(1f, 0f, 0f), V(0f, 1f, 0f));
+        rig.Arm(7, TwoRestoredPositions(), new[] { Identity, Identity }, ExitPoseBlend.AnimationPassRan(7));
         AssertPosition(V(0f, 0f, 0f), rig.Positions[0]);
         AssertPosition(V(0f, 0f, 0f), rig.Positions[1]);
 
@@ -359,11 +529,17 @@ public sealed class ExitPoseBlendCoreTests : IDisposable
     }
 
     [Fact]
-    public void ArmBeforeTheFramesPassRendersStopPoseThatFrameAndStepsTheNext()
+    public void ArmBeforeTheFramesPassLeavesRestorePoseThenThatPassRendersStopPoseAndStepsTheNext()
     {
+        RunIdlePrePass(6);
+        Assert.False(ExitPoseBlend.AnimationPassRan(7));
         var rig = new SimulatedRig(V(0f, 0f, 0f), V(0f, 0f, 0f));
 
-        rig.Arm(7, V(1f, 0f, 0f), V(0f, 1f, 0f));
+        rig.Arm(7, TwoRestoredPositions(), new[] { Identity, Identity }, ExitPoseBlend.AnimationPassRan(7));
+        AssertNothingWritten(rig);
+        AssertPosition(V(1f, 0f, 0f), rig.Positions[0]);
+        AssertPosition(V(0f, 1f, 0f), rig.Positions[1]);
+
         rig.PrePass();
         AssertPosition(V(1f, 0f, 0f), rig.Positions[0]);
         AssertPosition(V(0f, 1f, 0f), rig.Positions[1]);
@@ -380,6 +556,33 @@ public sealed class ExitPoseBlendCoreTests : IDisposable
         rig.Pass(8, 0.05f);
         Assert.Equal(0.15625f, rig.Positions[0].x, 6);
         Assert.Equal(0.3125f, rig.Positions[1].y, 6);
+    }
+
+    [Fact]
+    public void ControllerSwapInTheSameCallAsABeforePassArmReadsRestorePoseOnEveryBone()
+    {
+        RunIdlePrePass(6);
+        Quaternion restored = YRotation(40f);
+        var rig = new SimulatedRig(V(0f, 0f, 0f), V(0f, 0f, 0f));
+        rig.Arm(7, TwoRestoredPositions(), new[] { Identity, restored }, ExitPoseBlend.AnimationPassRan(7));
+
+        // The swap and its rig rebuild read the bones here, before the frame's pre-pass.
+        AssertRestorePose(rig, restored);
+
+        rig.PrePass();
+        AssertRestorePose(rig, restored);
+        Vector3 swappedKey = V(0f, 3f, 0f);
+        rig.DrivePosition(1, swappedKey);
+        Assert.Equal(
+            ExitPoseBlendPassDecision.Release,
+            ExitPoseBlendRules.DecidePass(true, false, false, false, true, false, false, controllerChanged: true));
+        rig.Cancel(ExitPoseBlendCancelKind.Release);
+
+        AssertPosition(V(1f, 0f, 0f), rig.Positions[0]);
+        Assert.True(ExitPoseBlendCore.SameExact(Identity, rig.Rotations[0]));
+        AssertPosition(swappedKey, rig.Positions[1]);
+        Assert.True(ExitPoseBlendCore.SameExact(restored, rig.Rotations[1]));
+        Assert.False(rig.Core.IsLive);
     }
 
     [Fact]
@@ -494,6 +697,91 @@ public sealed class ExitPoseBlendCoreTests : IDisposable
         Assert.Equal(new[] { spine, arm, hand, leg, sameNameOtherBone }, selected);
     }
 
+    private static PlayerControllerB Player(bool controlled)
+    {
+        var player = (PlayerControllerB)RuntimeHelpers.GetUninitializedObject(typeof(PlayerControllerB));
+        player.isPlayerControlled = controlled;
+        return player;
+    }
+
+    // Calls of the rig resolver while body runs; the resolver builds no rig.
+    private static int CountRigResolves(Action body)
+    {
+        Func<PlayerControllerB, ExitPoseBlendRig> original = ExitPoseBlend.RigResolver;
+        int calls = 0;
+        ExitPoseBlend.RigResolver = _ =>
+        {
+            calls++;
+            return null;
+        };
+        try
+        {
+            body();
+        }
+        finally
+        {
+            ExitPoseBlend.RigResolver = original;
+        }
+        return calls;
+    }
+
+    // Both gates of a stop that is not a suspend: the qualification at capture and the body
+    // checks at arm.
+    private static bool Arms(
+        InteractionAnimationStopReason reason,
+        bool playerControlled = true,
+        bool playerDead = false,
+        bool animatorActive = true,
+        bool culled = false)
+    {
+        return ExitPoseBlendRules.QualifiesForArming(reason, suspend: false, playerControlled) &&
+            ExitPoseBlendRules.CanArm(true, animatorActive, false, culled, playerDead, 12);
+    }
+
+    // The pass decision for a player and bones that still exist under the armed controller.
+    private static ExitPoseBlendPassDecision DecideLivePass(
+        bool playerDead = false,
+        bool playerLostControl = false,
+        bool roundChanged = false,
+        bool animatorActive = true,
+        bool culled = false)
+    {
+        return ExitPoseBlendRules.DecidePass(
+            true,
+            playerDead,
+            playerLostControl,
+            roundChanged,
+            animatorActive,
+            culled,
+            boneDestroyed: false,
+            controllerChanged: false);
+    }
+
+    // Two bones stopped at the origin and restored to (1,0,0)/identity and (0,1,0)/restored.
+    private static SimulatedRig ArmTwoBones(Quaternion restored)
+    {
+        var rig = new SimulatedRig(V(0f, 0f, 0f), V(0f, 0f, 0f));
+        rig.Arm(1, TwoRestoredPositions(), new[] { Identity, restored });
+        return rig;
+    }
+
+    private static Vector3[] TwoRestoredPositions() => new[] { V(1f, 0f, 0f), V(0f, 1f, 0f) };
+
+    // The pre-animation pass of frameCount with no live blend.
+    private static void RunIdlePrePass(int frameCount)
+    {
+        Func<int> engineFrameCount = ExitPoseBlend.ReadFrameCount;
+        ExitPoseBlend.ReadFrameCount = () => frameCount;
+        try
+        {
+            ExitPoseBlend.BeforeAnimationPass();
+        }
+        finally
+        {
+            ExitPoseBlend.ReadFrameCount = engineFrameCount;
+        }
+    }
+
     private static Vector3 V(float x, float y, float z) => new Vector3 { x = x, y = y, z = z };
 
     private static Quaternion Q(float x, float y, float z, float w) =>
@@ -603,12 +891,16 @@ public sealed class ExitPoseBlendCoreTests : IDisposable
             Arm(frame, new[] { restoredPosition }, new[] { restoredRotation });
         }
 
-        internal void Arm(int frame, Vector3[] restoredPositions, Quaternion[] restoredRotations)
+        internal void Arm(
+            int frame,
+            Vector3[] restoredPositions,
+            Quaternion[] restoredRotations,
+            bool writeStartPose = true)
         {
             Array.Copy(restoredPositions, Positions, Positions.Length);
             Array.Copy(restoredRotations, Rotations, Rotations.Length);
             Read();
-            Core.Arm(frame);
+            Core.Arm(frame, writeStartPose);
             Apply();
         }
 

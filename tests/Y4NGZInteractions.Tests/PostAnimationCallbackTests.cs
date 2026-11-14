@@ -131,7 +131,8 @@ public sealed class PostAnimationCallbackTests : IDisposable
         coordinator.RunPostAnimationCallbacks(0.02f);
 
         Assert.Equal(new[] { InteractionAnimationStopReason.Requested }, stopped.StopReasons);
-        Assert.True(ExitPoseBlendRules.QualifiesForArming(stopped.StopReasons[0]));
+        Assert.True(ExitPoseBlendRules.QualifiesForArming(
+            stopped.StopReasons[0], suspend: false, playerControlled: false));
         Assert.False(coordinator.IsInteractionActive(first));
         Assert.Equal(1, firstCalls);
         Assert.Equal(2, secondCalls);

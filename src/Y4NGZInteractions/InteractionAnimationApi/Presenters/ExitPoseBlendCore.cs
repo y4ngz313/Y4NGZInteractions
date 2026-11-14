@@ -30,11 +30,21 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
     /// </summary>
     internal static class ExitPoseBlendRules
     {
-        internal static bool QualifiesForArming(InteractionAnimationStopReason stopReason)
+        // The stop of a conflict suspend arms nothing: the body passes to the conflicting session,
+        // or back to the suspended one when that start fails. An interrupted stop arms only while
+        // the player is controlled, so one issued after a disconnect cleared the flag arms nothing.
+        internal static bool QualifiesForArming(
+            InteractionAnimationStopReason stopReason,
+            bool suspend,
+            bool playerControlled)
         {
+            if (suspend)
+                return false;
+
             return stopReason == InteractionAnimationStopReason.Requested ||
                 stopReason == InteractionAnimationStopReason.NaturalEnd ||
-                stopReason == InteractionAnimationStopReason.PresenterFailure;
+                stopReason == InteractionAnimationStopReason.PresenterFailure ||
+                (stopReason == InteractionAnimationStopReason.Interrupted && playerControlled);
         }
 
         // The animator is not evaluating: it may cull and none of the body's renderers is visible.
@@ -158,8 +168,11 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             IsLive = false;
         }
 
-        // Positions and Rotations hold R on entry and P0, to be written once, on return.
-        internal void Arm(int frameCount)
+        // Positions and Rotations hold R, as the transforms stored it, on entry. With
+        // writeStartPose they hold P0, to be written once, on return. Without it nothing is
+        // written and R is the last write, so the pre-pass rewrites R and the arming frame's pass
+        // writes P0 after the animation pass.
+        internal void Arm(int frameCount, bool writeStartPose)
         {
             armFrame = frameCount;
             ElapsedSeconds = 0f;
@@ -170,15 +183,18 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 restoredRotations[i] = Rotations[i];
                 targetPositions[i] = Positions[i];
                 targetRotations[i] = Rotations[i];
-                writtenPositions[i] = startPositions[i];
-                writtenRotations[i] = startRotations[i];
                 positionDriven[i] = false;
                 rotationDriven[i] = false;
-                bool write = HasUsableEnds(i);
+                bool write = writeStartPose && HasUsableEnds(i);
                 WritePositions[i] = write;
                 WriteRotations[i] = write;
-                Positions[i] = startPositions[i];
-                Rotations[i] = startRotations[i];
+                if (writeStartPose)
+                {
+                    Positions[i] = startPositions[i];
+                    Rotations[i] = startRotations[i];
+                }
+                writtenPositions[i] = Positions[i];
+                writtenRotations[i] = Rotations[i];
             }
 
             IsLive = true;

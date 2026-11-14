@@ -6,7 +6,7 @@ Last updated: 2026-11-14
 
 - Layer fades ease in and out instead of moving in a straight line
   (y4ngz313 Upgrades issue 848).
-- Interactions that finish or are stopped normally blend back into the player's live vanilla pose over 0.2 s instead of snapping to it.
+- Interactions blend back into the player's live vanilla pose over 0.2 s when they finish or are cancelled, instead of snapping to it.
 - The `Smooth Blending` config entry (default on) controls both the
   eased fades and the 0.2 s return; off gives straight-line fades and the
   instant return. It replaces the `Restore State Mode` entry, which is gone

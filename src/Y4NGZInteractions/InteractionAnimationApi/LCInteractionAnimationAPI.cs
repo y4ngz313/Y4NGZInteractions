@@ -208,11 +208,15 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         /// </para>
         /// <para>
         /// After TryStopInteraction returns, the session is over and the animator is vanilla.
-        /// With Smooth Blending on, the player's skin bones keep showing the session's last pose
-        /// and move to the live vanilla pose over the next 0.2 seconds; bone reads in that window
-        /// see the blended pose, a bone written every frame by its own writer becomes the blend's
-        /// target, InteractionEnded handlers run with the session's last pose on the rig, and a
-        /// stop issued from inside a callback blends the same way.
+        /// With Smooth Blending on, the player's skin bones hold the session's last rendered pose
+        /// if the stop ran after that frame's animation pass (LateUpdate, post-animation
+        /// callbacks, end-of-frame coroutines) and the restored vanilla pose if it ran before it
+        /// (Update, FixedUpdate, <c>yield return null</c> coroutines). The stop frame renders the
+        /// session's last pose either way, and the bones then move to the live vanilla pose over
+        /// the next 0.2 seconds. Bone reads in that window see the blended pose, a bone written
+        /// every frame by its own writer becomes the blend's target, InteractionEnded handlers see
+        /// the same state as code right after the stop, and a stop issued from inside a callback
+        /// blends the same way.
         /// </para>
         /// </remarks>
         /// <param name="handle">Active body-world session handle.</param>

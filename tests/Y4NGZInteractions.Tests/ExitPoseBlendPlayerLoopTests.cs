@@ -27,6 +27,7 @@ public sealed class ExitPoseBlendPlayerLoopTests
         int writes = 0;
         Func<PlayerLoopSystem> engineRead = ExitPoseBlendPlayerLoop.ReadLoop;
         Action<PlayerLoopSystem> engineWrite = ExitPoseBlendPlayerLoop.WriteLoop;
+        Func<int> engineFrameCount = ExitPoseBlend.ReadFrameCount;
         ExitPoseBlendPlayerLoop.ReadLoop = () => current;
         ExitPoseBlendPlayerLoop.WriteLoop = loop =>
         {
@@ -52,8 +53,14 @@ public sealed class ExitPoseBlendPlayerLoopTests
             Assert.Equal(Types(original.subSystemList[2]), Types(current.subSystemList[2]));
             Assert.Equal(3, original.subSystemList[1].subSystemList.Length);
 
-            // With no live blend the installed step returns without touching anything.
+            // With no live blend the installed step only records the frame, so an arm later in
+            // that frame counts as after its animation pass and an arm in the next frame does not.
+            ExitPoseBlend.ReadFrameCount = () => 42;
             current.subSystemList[1].subSystemList[0].updateDelegate();
+            Assert.True(ExitPoseBlend.AnimationPassRan(42));
+            Assert.False(ExitPoseBlend.AnimationPassRan(43));
+            Assert.Equal(0, ExitPoseBlend.LiveCount);
+            Assert.False(ExitPoseBlend.RunnerEnabled);
 
             Assert.True(ExitPoseBlendPlayerLoop.Install());
             Assert.Equal(1, writes);
@@ -78,6 +85,8 @@ public sealed class ExitPoseBlendPlayerLoopTests
             ExitPoseBlendPlayerLoop.Uninstall();
             ExitPoseBlendPlayerLoop.ReadLoop = engineRead;
             ExitPoseBlendPlayerLoop.WriteLoop = engineWrite;
+            ExitPoseBlend.ReadFrameCount = engineFrameCount;
+            ExitPoseBlend.Shutdown();
         }
     }
 

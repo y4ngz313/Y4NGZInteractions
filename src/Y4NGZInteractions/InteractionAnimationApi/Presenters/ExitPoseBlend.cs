@@ -8,13 +8,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 {
     /// <summary>
     /// The exit pose blend of live-body sessions. Stop captures the pose the session last
-    /// rendered, restores the vanilla controller, then writes that pose back once;
-    /// <see cref="ExitPoseBlendRunner"/> then carries every skin bone into the live vanilla pose
-    /// over <see cref="ExitPoseBlendCore.DurationSeconds"/>. Right before each animation pass
-    /// (<see cref="ExitPoseBlendPlayerLoop"/>) every channel that still holds a blend's write gets
-    /// the restored pose back, so no animation pass, rig rebuild or controller swap reads a
-    /// blended value. Owns the per-player bone cache, the live blends and the runner's enabled
-    /// state. Local and visual only; nothing is networked.
+    /// rendered (P0) and restores the vanilla controller; the stop frame still renders P0, which
+    /// Stop writes back when the frame's animation pass already ran and the runner's first pass
+    /// writes otherwise. <see cref="ExitPoseBlendRunner"/> then carries every skin bone into the
+    /// live vanilla pose over <see cref="ExitPoseBlendCore.DurationSeconds"/>. Right before each
+    /// animation pass (<see cref="ExitPoseBlendPlayerLoop"/>) every channel that still holds a
+    /// blend's write gets the restored pose back, so no animation pass, rig rebuild or controller
+    /// swap reads a blended value. Owns the per-player bone cache, the live blends and the
+    /// runner's enabled state. Local and visual only; nothing is networked.
     /// </summary>
     internal static class ExitPoseBlend
     {
@@ -22,6 +23,10 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private static readonly List<ExitPoseBlendRig> LiveBlends = new List<ExitPoseBlendRig>();
         private static Behaviour runner;
         private static bool failureLogged;
+        private static int prePassFrame = -1;
+
+        // Time.frameCount. Replaced only by tests.
+        internal static Func<int> ReadFrameCount = () => Time.frameCount;
 
         // Resolves the cached blend rig of a player, building it on first use or after the body's
         // renderers or meshes changed. Replaced only by tests.
@@ -39,16 +44,20 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
         /// <summary>
         /// First step of a live-body Stop: captures P0 when the Smooth Blending switch is on, the
-        /// stop reason qualifies and the body is visibly animating. Returns the rig to arm after the
-        /// restore, or null.
+        /// stop qualifies (<see cref="ExitPoseBlendRules.QualifiesForArming"/>) and the body is
+        /// visibly animating. Returns the rig to arm after the restore, or null.
         /// </summary>
         internal static ExitPoseBlendRig CaptureStartPose(
             PlayerControllerB player,
             Animator animator,
-            InteractionAnimationStopReason stopReason)
+            InteractionAnimationStopReason stopReason,
+            bool suspend)
         {
-            if (!BlendingSettings.SmoothBlending || !ExitPoseBlendRules.QualifiesForArming(stopReason))
+            if (!BlendingSettings.SmoothBlending ||
+                !ExitPoseBlendRules.QualifiesForArming(stopReason, suspend, player?.isPlayerControlled == true))
+            {
                 return null;
+            }
 
             try
             {
@@ -66,9 +75,12 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         }
 
         /// <summary>
-        /// Last step of a live-body Stop, after the camera and visor are final: captures R, writes
-        /// P0 once and hands the blend to the runner. Arms only when the restore reported success
-        /// and both the runner and the pre-animation pass are in place.
+        /// Last step of a live-body Stop, after the camera and visor are final: captures R and
+        /// hands the blend to the runner. P0 goes back on the bones now only when this frame's
+        /// animation pass already ran. Before the pass the bones keep R, so a controller swap or
+        /// rig rebuild later in the same call reads R, and the runner's first pass writes P0
+        /// after the animation pass. Arms only when the restore reported success and both the
+        /// runner and the pre-animation pass are in place.
         /// </summary>
         internal static void Arm(ExitPoseBlendRig rig, bool animatorRestored)
         {
@@ -77,7 +89,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             try
             {
-                if (!rig.TryArm(animatorRestored))
+                int frameCount = ReadFrameCount();
+                if (!rig.TryArm(animatorRestored, frameCount, AnimationPassRan(frameCount)))
                     return;
                 LiveBlends.Add(rig);
                 SetRunnerEnabled(true);
@@ -87,6 +100,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 LogFailureOnce("arm", exception);
             }
         }
+
+        // This frame's pre-pass already ran, so the animation pass right after it has too.
+        internal static bool AnimationPassRan(int frameCount) => frameCount == prePassFrame;
 
         // Ends the player's live blend before a new session captures any pose.
         internal static void CancelForNewSession(PlayerControllerB player)
@@ -106,10 +122,12 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 SetRunnerEnabled(false);
         }
 
-        // Head of PreLateUpdate, right before the animators update: every live blend puts R back
-        // on the channels that still hold its last write. While idle this is one count check.
+        // Head of PreLateUpdate, right before the animators update: records the frame, then every
+        // live blend puts R back on the channels that still hold its last write. While idle this
+        // is one frame read and one count check.
         internal static void BeforeAnimationPass()
         {
+            prePassFrame = ReadFrameCount();
             if (LiveBlends.Count == 0)
                 return;
 
@@ -164,6 +182,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             SetRunnerEnabled(false);
             runner = null;
             failureLogged = false;
+            prePassFrame = -1;
         }
 
         private static ExitPoseBlendRig ResolveRig(PlayerControllerB player)
@@ -346,7 +365,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             return true;
         }
 
-        internal bool TryArm(bool animatorRestored)
+        internal bool TryArm(bool animatorRestored, int frameCount, bool writeStartPose)
         {
             bool animatorActive = IsAnimatorActive();
             if (!ExitPoseBlendRules.CanArm(
@@ -365,7 +384,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             armedRound = StartOfRound.Instance;
             wasPlayerControlled = Player.isPlayerControlled;
             ReadBones();
-            Core.Arm(Time.frameCount);
+            Core.Arm(frameCount, writeStartPose);
             WriteBones();
             return true;
         }

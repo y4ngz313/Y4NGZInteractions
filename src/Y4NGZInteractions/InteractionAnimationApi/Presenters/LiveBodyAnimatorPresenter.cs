@@ -240,6 +240,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private bool specialAnimationAutoStopExemptLogged;
         private InteractionAnimationStopReason? requestedStopReason;
         private bool active;
+        // True only while StopForSuspend runs Stop.
+        private bool stoppingForSuspend;
 
         public InteractionAnimationStopReason? RequestedStopReason => requestedStopReason;
 
@@ -4374,6 +4376,20 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             ResetPlaybackRateProbe();
         }
 
+        // The session's conflict suspend: an interrupted Stop that arms no exit pose blend.
+        internal void StopForSuspend()
+        {
+            stoppingForSuspend = true;
+            try
+            {
+                Stop(InteractionAnimationStopReason.Interrupted);
+            }
+            finally
+            {
+                stoppingForSuspend = false;
+            }
+        }
+
         public void Stop(InteractionAnimationStopReason stopReason)
         {
             if (!active && bodyAnimator == null && bundle == null)
@@ -4388,7 +4404,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             // P0 for the exit pose blend: the pose the session last rendered, read before any
             // restore below writes a bone. Null when blending is off or the stop does not arm.
             ExitPoseBlendRig exitPoseBlend = active
-                ? ExitPoseBlend.CaptureStartPose(context?.Request?.Player, bodyAnimator, stopReason)
+                ? ExitPoseBlend.CaptureStartPose(
+                    context?.Request?.Player, bodyAnimator, stopReason, stoppingForSuspend)
                 : null;
 
             FinishPlaybackRateProbe("session_stop");
@@ -4494,8 +4511,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             // #660: Last transform write of Stop: the earlier visor restore preceded the chain
             // snap, evaluations and pin, and Stop entry removed the active onBeforeRender glue.
             GlueSeamVisorToFinalCameraPose(player, "stop_final");
-            // After the last transform write: R is the finished restore, P0 goes back on the
-            // rig for this frame, and ExitPoseBlendRunner carries it into the live vanilla pose.
+            // After the last transform write: R is the finished restore. P0 goes back on the rig
+            // now when this frame's animation pass already ran, otherwise at the runner's first
+            // pass, and ExitPoseBlendRunner carries it into the live vanilla pose.
             ExitPoseBlend.Arm(exitPoseBlend, animatorRestored);
             InteractionAnimationApiRestoreDiagnostics.NotifyRestoreCompleted(player);
             ReleaseBundle(retainOwnedBundles: stopReason != InteractionAnimationStopReason.Shutdown);

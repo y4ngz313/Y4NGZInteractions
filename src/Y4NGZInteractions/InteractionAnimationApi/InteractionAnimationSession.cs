@@ -125,7 +125,11 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 return false;
             try
             {
-                presenter.Stop(InteractionAnimationStopReason.Interrupted);
+                // A live body told it is suspending arms no exit pose blend for this stop.
+                if (presenter is LiveBodyAnimatorPresenter liveBody)
+                    liveBody.StopForSuspend();
+                else
+                    presenter.Stop(InteractionAnimationStopReason.Interrupted);
                 active = false;
                 suspended = true;
                 return true;

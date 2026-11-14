@@ -64,7 +64,7 @@ Layer fades follow the smoothstep curve 3t² − 2t³ (0, 0.15625, 0.5, 0.84375,
 
 1. captures P0, the local position and rotation of every blend bone, as the first statement after the `stop_begin` sample and before the locomotion parameters sync (P0 is the pose the session last rendered);
 2. captures R, the restored pose, after the visor seam (the last transform write of Stop), and registers the blend;
-3. writes P0 back once, so the rig holds the session pose when Stop returns.
+3. writes P0 back once, only when this frame's animation pass already ran (a stop from LateUpdate, a post-animation callback, or a coroutine resumed by `WaitForEndOfFrame`). A stop from Update, FixedUpdate or a coroutine resumed by `yield return null` runs before that pass, so the bones keep R. The runner's first pass then writes P0 after the animation pass.
 
 From then on two steps run every frame.
 
@@ -72,18 +72,18 @@ Before every animation pass, a system at the head of `PreLateUpdate` (ahead of `
 
 After the animation pass, the blend runner (order -31000, `LateUpdate`) computes and writes the blend. Each bone's position and rotation are handled separately. Per channel it reads the current value. If the value differs from the blend's last write (an exact compare), the animator or another writer drove that channel and the target is that value; otherwise the target is R. The blend's last write is the value the transform stored, read back after every write. The runner writes nlerp (rotation) or lerp (position) from P0 to the target at ease(t), with t = elapsed / 0.2 s. At t ≥ 1 it writes the target and ends. The target is re-read every frame, so a vanilla change during the blend is followed. The blend never touches the animator, its controller, states, parameters or layer weights, and it never writes scale.
 
-Stop still returns with P0 on the bones, and the stop frame renders P0. While a blend is live it costs about 4 transform reads and 2 transform writes per bone per frame; while idle the pre-pass system is one count check and the runner is disabled.
+After Stop returns, the bones hold P0 when the stop ran after the frame's animation pass, and R when it ran before it. The stop frame renders P0 either way. The reason for keeping R before the pass: a consumer that swaps the animator controller in the same call as an Update stop binds the restored pose, so the swap must not read P0. While a blend is live it costs about 4 transform reads and 2 transform writes per bone per frame; while idle the pre-pass system is one count check and the runner is disabled.
 
 **Timing.**
 
 | Rule | Value |
 | --- | --- |
 | Clock | `Time.deltaTime`, the scaled time the animator uses |
-| First pass | The stop frame renders P0. The next frame renders ease(dt / 0.2) |
+| First pass | The stop frame renders P0, written at Stop (stop after the animation pass) or by the runner's first pass (stop before it). The next frame renders ease(dt / 0.2) |
 | Hitch | t is clamped to 1; a long frame writes the target and ends the blend |
 | Switch latch | `Smooth Blending` is read once per blend, when Stop begins, and once per session for fades, when the session starts |
 
-**Arming rules.** All must hold: the switch is on; the stop reason is Requested, NaturalEnd or PresenterFailure; the animator restore succeeded; the body animator is not null and is active and enabled; the animator does not update in the physics step (an animator in physics update mode never arms); the animator is not culled (its culling mode is AlwaysAnimate or a source renderer is visible); the player is alive; the bone set is not empty; the pre-pass system is installed. Interrupted arms nothing because the displacing session takes the body in the same call. PlayerDied, PlayerInvalidated, RoundUnloaded and Shutdown arm nothing.
+**Arming rules.** All must hold: the switch is on; the stop reason is Requested, NaturalEnd, PresenterFailure, or Interrupted while `player.isPlayerControlled` is true; the stop is not the library's own conflict suspend (policy InterruptExisting), which arms nothing although its public stop reason stays Interrupted; the animator restore succeeded; the body animator is not null and is active and enabled; the animator does not update in the physics step (an animator in physics update mode never arms); the animator is not culled (its culling mode is AlwaysAnimate or a source renderer is visible); the player is alive; the bone set is not empty; the pre-pass system is installed. PlayerDied, PlayerInvalidated, RoundUnloaded and Shutdown never arm. A Stop followed by a Start in the same call looks as without blending: the new session cancels the blend before any animation pass.
 
 **Bone set.** The union of the skinned bones of the player model, both LOD models and the arms model, without null entries, the animator transform, the arms metarig, the local arms transform, the gameplay camera and the camera's ancestors. The local player blends the visible first-person arms and the shadow body; a remote body blends the whole body. The set is cached per player and rebuilt when a renderer reference or its shared mesh changes. A bone with a non-finite or near-zero-length value is skipped for that pass.
 

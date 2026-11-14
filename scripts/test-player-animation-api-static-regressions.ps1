@@ -190,4 +190,34 @@ if ($hostOrder -contains -1 -or
     throw "InteractionRuntimeHost.LateUpdate must run the coordinator tick, ArmsMetarigWriteBackOwner, MetarigRootWriteBackOwner(late), then MovementStartProbe, in that order."
 }
 
+# A conflict suspend arms no exit pose blend: the session routes it through StopForSuspend, which
+# flags the Stop that captures P0.
+$sessionSource = Get-Content -LiteralPath (Join-Path $sourceRoot "InteractionAnimationApi/InteractionAnimationSession.cs") -Raw
+$trySuspend = [regex]::Match($sessionSource, '(?s)internal bool TrySuspend\(.*?\r?\n        \}')
+if (-not $trySuspend.Success -or -not $trySuspend.Value.Contains("StopForSuspend()")) {
+    throw "InteractionAnimationSession.TrySuspend must stop a live body through StopForSuspend()."
+}
+$stopForSuspend = [regex]::Match($presenterSource, '(?s)internal void StopForSuspend\(\)\s*\{.*?\r?\n        \}')
+if (-not $stopForSuspend.Success) {
+    throw "Could not isolate LiveBodyAnimatorPresenter.StopForSuspend for suspend-flag validation."
+}
+$suspendOrder = @(
+    "stoppingForSuspend = true;",
+    "Stop(InteractionAnimationStopReason.Interrupted);",
+    "finally",
+    "stoppingForSuspend = false;"
+) | ForEach-Object { $stopForSuspend.Value.IndexOf($_) }
+if ($suspendOrder -contains -1 -or
+    $suspendOrder[1] -le $suspendOrder[0] -or
+    $suspendOrder[2] -le $suspendOrder[1] -or
+    $suspendOrder[3] -le $suspendOrder[2]) {
+    throw "StopForSuspend must set stoppingForSuspend, call Stop(Interrupted), then clear stoppingForSuspend in finally."
+}
+if ($stopSource -notmatch 'ExitPoseBlend\.CaptureStartPose\([^;]*\bstoppingForSuspend\)') {
+    throw "Stop must pass stoppingForSuspend to ExitPoseBlend.CaptureStartPose."
+}
+if ([regex]::Matches($presenterSource, 'stoppingForSuspend\s*=[^=]').Count -ne 2) {
+    throw "stoppingForSuspend must be assigned only by StopForSuspend (set and clear)."
+}
+
 Write-Output "Static API/package guard passed."
