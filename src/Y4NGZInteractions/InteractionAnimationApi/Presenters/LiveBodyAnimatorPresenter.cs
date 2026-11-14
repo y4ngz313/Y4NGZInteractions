@@ -17,7 +17,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
     /// and emote animations. The visible arms stay LC's real <c>thisPlayerModelArms</c>, kept
     /// camera-matched by vanilla code. No duplicate rig, no per-frame transform copying.
     /// </summary>
-    internal sealed class LiveBodyAnimatorPresenter : IInteractionPresenter
+    internal sealed class LiveBodyAnimatorPresenter : IInteractionPresenter, IInteractionPostAnimationFrameSource
     {
         private const float CameraDisplacementGuardThreshold = 1.25f;
         private const float CameraRotationResidueThresholdDegrees = 0.02f;
@@ -178,8 +178,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private bool exitRequested;
         private float exitElapsedSeconds;
         private float exitDurationSeconds;
-        private float exitStartFullBodyWeight;
-        private float exitStartFirstPersonWeight;
+        private InteractionLayerWeights layerWeights;
+        private InteractionAnimationViewer viewer;
         private int lastMovementValue = -1;
         private CrouchStateResyncDebounce crouchStateResyncDebounce;
         private int lastBaseLayerStateHash;
@@ -240,12 +240,19 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         private bool specialAnimationAutoStopExemptLogged;
         private InteractionAnimationStopReason? requestedStopReason;
         private bool active;
+        // True only while StopForSuspend runs Stop.
+        private bool stoppingForSuspend;
 
         public InteractionAnimationStopReason? RequestedStopReason => requestedStopReason;
 
         public bool HasResourceOwnership => active && bodyAnimator != null &&
             appliedController != null &&
             bodyAnimator.runtimeAnimatorController == appliedController;
+
+        InteractionAnimationViewer IInteractionPostAnimationFrameSource.Viewer => viewer;
+
+        float IInteractionPostAnimationFrameSource.SessionWeight =>
+            layerWeights != null ? layerWeights.SessionWeight : 0f;
 
         private ManualLogSource RestoreLogger =>
             context?.Logger ?? InteractionAnimationApiRestoreDiagnostics.StaticLogger;
@@ -424,6 +431,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 return false;
             }
 
+            // A blend still carrying the last stop's pose ends before any capture below.
+            ExitPoseBlend.CancelForNewSession(context.Request.Player);
+
             this.context = context;
             bodyAnimator = context.Request.Player.playerBodyAnimator;
             // #660: An external camera/visor owner supersedes any outgoing restore pin's visor
@@ -451,8 +461,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             exitRequested = false;
             exitElapsedSeconds = 0f;
             exitDurationSeconds = 0f;
-            exitStartFullBodyWeight = 0f;
-            exitStartFirstPersonWeight = 0f;
+            layerWeights = null;
             double setupMs = LapMilliseconds(seamTiming);
 
             if (!TryLoadBundle(manifest, body, out reason))
@@ -592,7 +601,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             ReleasePropIfDue();
             if (exitRequested)
                 exitElapsedSeconds += Mathf.Max(0f, deltaTime);
-            ApplyLayerWeights();
+            ApplyLayerWeights(deltaTime);
             // Vanilla writes "Walking"/"crouching"/"Jumping" only on state transitions, and it
             // enters crouch via the "startCrouching" trigger — which the snapshot machinery
             // never captures. Re-assert them every tick from live player state so a crouch or
@@ -3536,8 +3545,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             float exitSeconds = Mathf.Max(0f, body.exitSeconds);
             exitElapsedSeconds = 0f;
             exitDurationSeconds = exitSeconds;
-            exitStartFullBodyWeight = GetLayerWeightOrZero(fullBodyLayerIndex);
-            exitStartFirstPersonWeight = GetLayerWeightOrZero(firstPersonLayerIndex);
+            layerWeights?.BeginExit();
             context?.Logger?.LogInfo(
                 "[LCInteractionAnimationAPI] live_body.exit_begun: " +
                 $"frame={Time.frameCount} handle={context.Handle} " +
@@ -3548,15 +3556,19 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         // 0 = idle, 1 = walking, 2 = sprinting — matched by the shell controller's movement
         // transitions so the walk/run first-person loops play while moving with the item out.
         // Bound once as ref accessors: a FieldInfo.GetValue per local tick boxed the bool every
-        // frame. Null when this game build lacks the bool field, which keeps the fallbacks below.
+        // frame. Null when this game build lacks the field, which keeps the fallbacks below.
         private static readonly HarmonyLib.AccessTools.FieldRef<GameNetcodeStuff.PlayerControllerB, bool>
-            VanillaIsWalkingRef = BindVanillaBoolField("isWalking");
+            VanillaIsWalkingRef = BindVanillaField<bool>("isWalking");
 
         private static readonly HarmonyLib.AccessTools.FieldRef<GameNetcodeStuff.PlayerControllerB, bool>
-            VanillaIsJumpingRef = BindVanillaBoolField("isJumping");
+            VanillaIsJumpingRef = BindVanillaField<bool>("isJumping");
 
-        private static HarmonyLib.AccessTools.FieldRef<GameNetcodeStuff.PlayerControllerB, bool>
-            BindVanillaBoolField(string fieldName)
+        // Vanilla's 0 to 1 weight of the hands-on-wall arm pose; layers that yield to it fade by it.
+        private static readonly HarmonyLib.AccessTools.FieldRef<GameNetcodeStuff.PlayerControllerB, float>
+            VanillaHandsOnWallWeightRef = BindVanillaField<float>("handsOnWallWeight");
+
+        private static HarmonyLib.AccessTools.FieldRef<GameNetcodeStuff.PlayerControllerB, T>
+            BindVanillaField<T>(string fieldName)
         {
             try
             {
@@ -3565,9 +3577,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     System.Reflection.BindingFlags.Instance |
                     System.Reflection.BindingFlags.NonPublic |
                     System.Reflection.BindingFlags.Public);
-                if (field == null || field.FieldType != typeof(bool))
+                if (field == null || field.FieldType != typeof(T))
                     return null;
-                return HarmonyLib.AccessTools.FieldRefAccess<GameNetcodeStuff.PlayerControllerB, bool>(field);
+                return HarmonyLib.AccessTools.FieldRefAccess<GameNetcodeStuff.PlayerControllerB, T>(field);
             }
             catch
             {
@@ -4364,6 +4376,20 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             ResetPlaybackRateProbe();
         }
 
+        // The session's conflict suspend: an interrupted Stop that arms no exit pose blend.
+        internal void StopForSuspend()
+        {
+            stoppingForSuspend = true;
+            try
+            {
+                Stop(InteractionAnimationStopReason.Interrupted);
+            }
+            finally
+            {
+                stoppingForSuspend = false;
+            }
+        }
+
         public void Stop(InteractionAnimationStopReason stopReason)
         {
             if (!active && bodyAnimator == null && bundle == null)
@@ -4375,6 +4401,12 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             // early-out and ahead of all of them.
             if (active)
                 LogMidSessionSample("stop_begin");
+            // P0 for the exit pose blend: the pose the session last rendered, read before any
+            // restore below writes a bone. Null when blending is off or the stop does not arm.
+            ExitPoseBlendRig exitPoseBlend = active
+                ? ExitPoseBlend.CaptureStartPose(
+                    context?.Request?.Player, bodyAnimator, stopReason, stoppingForSuspend)
+                : null;
 
             FinishPlaybackRateProbe("session_stop");
 
@@ -4396,7 +4428,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             double visorCaptureMs = LapMilliseconds(seamTiming);
             DestroyProp("stop");
             double propDestroyMs = LapMilliseconds(seamTiming);
-            string restoreResult = RestoreAnimator(out AnimatorStateRestoreMode restoreStateMode);
+            string restoreResult = RestoreAnimator();
             double animatorRestoreMs = LapMilliseconds(seamTiming);
             bool animatorRestored =
                 string.Equals(restoreResult, "restored", StringComparison.Ordinal);
@@ -4479,6 +4511,10 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             // #660: Last transform write of Stop: the earlier visor restore preceded the chain
             // snap, evaluations and pin, and Stop entry removed the active onBeforeRender glue.
             GlueSeamVisorToFinalCameraPose(player, "stop_final");
+            // After the last transform write: R is the finished restore. P0 goes back on the rig
+            // now when this frame's animation pass already ran, otherwise at the runner's first
+            // pass, and ExitPoseBlendRunner carries it into the live vanilla pose.
+            ExitPoseBlend.Arm(exitPoseBlend, animatorRestored);
             InteractionAnimationApiRestoreDiagnostics.NotifyRestoreCompleted(player);
             ReleaseBundle(retainOwnedBundles: stopReason != InteractionAnimationStopReason.Shutdown);
             double cleanupMs = LapMilliseconds(seamTiming);
@@ -4500,7 +4536,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             context?.Logger?.LogInfo(
                 "[LCInteractionAnimationAPI] live_body.restored: " +
                 $"handle={(context != null ? context.Handle.ToString() : "<none>")} reason='{stopReason}' " +
-                $"controllerRestore='{restoreResult}' restoreStateMode='{FormatRestoreStateMode(restoreStateMode)}'.");
+                $"controllerRestore='{restoreResult}'.");
             // Empty-hands jitter tripwire: keep watching the same transforms for ten seconds.
             ArmPostSessionWatcher(
                 midSessionTargets,
@@ -4528,8 +4564,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             exitRequested = false;
             exitElapsedSeconds = 0f;
             exitDurationSeconds = 0f;
-            exitStartFullBodyWeight = 0f;
-            exitStartFirstPersonWeight = 0f;
+            layerWeights = null;
             lastMovementValue = -1;
             ResetPlaybackRateProbe();
             hasLastSyncedCrouchState = false;
@@ -4855,6 +4890,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             appliedController = controllerToApply;
             fullBodyLayerIndex = FindLayerIndex(bodyAnimator, body.fullBodyLayer);
             firstPersonLayerIndex = FindLayerIndex(bodyAnimator, body.firstPersonArmsLayer);
+            layerWeights = BuildLayerWeights(body);
 
             // The controller swap reset every parameter to its default. Vanilla only rewrites
             // "Walking"/"crouching"/"Jumping" on state transitions, so carry the equip-time
@@ -4902,7 +4938,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             SetBoolIfExists(body.activeBool, true);
             FireTriggerIfExists(body.enterTrigger);
             elapsedSeconds = 0f;
-            ApplyLayerWeights();
+            ApplyLayerWeights(0f);
             bodyAnimator.Update(0f);
 
             if (stanceEntry != BaseLayerStanceEntryAction.None &&
@@ -5032,57 +5068,95 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 $"handle={context.Handle} bundle='{pack.bundleFileName}' overriddenSlots={applied}.");
             return true;
         }
-        private void ApplyLayerWeights()
+
+        // Resolves fullBodyLayer, firstPersonArmsLayer and body.layers against the applied
+        // controller once per session.
+        private InteractionLayerWeights BuildLayerWeights(InteractionAnimationManifest.BodyManifest body)
         {
-            InteractionAnimationManifest.BodyManifest body = context?.Manifest?.body;
-            if (body == null || bodyAnimator == null)
-                return;
+            InteractionAnimationLayerSpec[] specs = InteractionAnimationLayerSpecs.Resolve(body);
+            var indices = new int[specs.Length];
+            for (int i = 0; i < specs.Length; i++)
+                indices[i] = FindLayerIndex(bodyAnimator, specs[i].Name);
 
-            float startWeight = Mathf.Clamp01(body.startLayerWeight <= 0f ? 1f : body.startLayerWeight);
-            float weight = body.layerWeightRampSeconds > 0f
-                ? Mathf.Lerp(startWeight, 1f, Mathf.Clamp01(elapsedSeconds / body.layerWeightRampSeconds))
-                : 1f;
-
-            float fullBodyWeight = body.fullBodyLayerWeight >= 0f
-                ? Mathf.Clamp01(body.fullBodyLayerWeight)
-                : weight;
-            float firstPersonWeight = weight;
-
-            if (body.enterLayerFadeSeconds > 0f)
+            InteractionLayerWeights weights = InteractionLayerWeights.Build(
+                context.Manifest,
+                specs,
+                indices,
+                out string skippedBaseLayer,
+                out string skippedDuplicateLayer);
+            if (skippedBaseLayer != null)
             {
-                float enterT = Mathf.Clamp01(elapsedSeconds / body.enterLayerFadeSeconds);
-                fullBodyWeight *= enterT;
-                firstPersonWeight *= enterT;
+                context.Logger?.LogWarning(
+                    "[LCInteractionAnimationAPI] live_body.layer_skipped: " +
+                    $"handle={context.Handle} layer='{skippedBaseLayer}' reason='base_layer'.");
             }
-
-            if (!exitRequested && body.naturalEndLayerFadeSeconds > 0f &&
-                context.Manifest.durationSeconds > 0f)
+            if (skippedDuplicateLayer != null)
             {
-                float remaining = context.Manifest.durationSeconds - elapsedSeconds;
-                float endT = Mathf.Clamp01(remaining / body.naturalEndLayerFadeSeconds);
-                fullBodyWeight *= endT;
-                firstPersonWeight *= endT;
+                context.Logger?.LogWarning(
+                    "[LCInteractionAnimationAPI] live_body.layer_skipped: " +
+                    $"handle={context.Handle} layer='{skippedDuplicateLayer}' reason='index_already_driven'.");
             }
-
-            // Fade custom layers to zero before the vanilla controller is restored. Previously
-            // the exit transition reached the curve-empty Neutral state at weight 1, producing
-            // one frame of extreme/invalid IK immediately before teardown.
-            if (exitRequested)
-            {
-                float exitT = exitDurationSeconds > 1e-5f
-                    ? Mathf.Clamp01(exitElapsedSeconds / exitDurationSeconds)
-                    : 1f;
-                fullBodyWeight = Mathf.Lerp(exitStartFullBodyWeight, 0f, exitT);
-                firstPersonWeight = Mathf.Lerp(exitStartFirstPersonWeight, 0f, exitT);
-            }
-
-            SetLayerWeightIfValid(fullBodyLayerIndex, fullBodyWeight);
-            SetLayerWeightIfValid(firstPersonLayerIndex, firstPersonWeight);
+            return weights;
         }
 
-        private string RestoreAnimator(out AnimatorStateRestoreMode restoreStateMode)
+        // Every exit fade reaches zero before Stop restores the vanilla controller, so the exit
+        // transition never shows the curve-empty Neutral state at full weight.
+        private void ApplyLayerWeights(float deltaTime)
         {
-            restoreStateMode = InteractionAnimationApiRestoreDiagnostics.ReadRestoreStateMode();
+            InteractionLayerWeights weights = layerWeights;
+            if (weights == null || bodyAnimator == null)
+                return;
+
+            GameNetcodeStuff.PlayerControllerB player = context?.Request?.Player;
+            viewer = ResolveViewer(player);
+            bool sprinting = weights.YieldsToSprint && ResolveLocomotionState().Sprinting;
+            float handsOnWallWeight = weights.YieldsToHandsOnWall ? ReadHandsOnWallWeight(player) : 0f;
+            weights.Update(
+                elapsedSeconds,
+                exitRequested,
+                exitElapsedSeconds,
+                exitDurationSeconds,
+                viewer,
+                sprinting,
+                handsOnWallWeight,
+                deltaTime);
+            for (int i = 0; i < weights.Count; i++)
+                SetLayerWeightIfValid(weights.GetLayerIndex(i), weights.GetWeight(i));
+        }
+
+        // LocalThirdPerson while the local body renders normally (a third-person camera);
+        // LocalFirstPerson while it is hidden or draws only shadows.
+        private static InteractionAnimationViewer ResolveViewer(GameNetcodeStuff.PlayerControllerB player)
+        {
+            bool isLocal = IsLocalPlayer(player);
+            bool modelEnabled = false;
+            bool shadowsOnly = false;
+            if (isLocal)
+            {
+                try
+                {
+                    SkinnedMeshRenderer model = player.thisPlayerModel;
+                    if (model != null)
+                    {
+                        modelEnabled = model.enabled;
+                        shadowsOnly = model.shadowCastingMode == ShadowCastingMode.ShadowsOnly;
+                    }
+                }
+                catch { }
+            }
+            return InteractionLayerWeightPolicy.ResolveViewer(isLocal, modelEnabled, shadowsOnly);
+        }
+
+        private static float ReadHandsOnWallWeight(GameNetcodeStuff.PlayerControllerB player)
+        {
+            if (VanillaHandsOnWallWeightRef == null || player == null)
+                return 0f;
+            try { return VanillaHandsOnWallWeightRef(player); }
+            catch { return 0f; }
+        }
+
+        private string RestoreAnimator()
+        {
             if (bodyAnimator == null || snapshot == null)
                 return "no_snapshot";
 
@@ -5098,9 +5172,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 bool scopedRestore = body != null;
 
                 // Equip-while-crouched then stand (or the reverse) makes the captured base-layer
-                // state a stale stance pose. Skip its forced replay and let the locomotion
-                // parameters — synced to CURRENT player state before the replay evaluates —
-                // drive layer 0 instead. Other layers restore as usual.
+                // state a stale stance pose. The captured state is never replayed: the locomotion
+                // parameters, synced to CURRENT player state before the restore evaluates, and
+                // the live state replayed below drive layer 0.
                 bool currentCrouching = false;
                 bool currentCrouchingKnown = false;
                 try
@@ -5158,24 +5232,20 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     bodyAnimator,
                     appliedController,
                     rebindAnimator: !scopedRestore,
-                    restoreMode: restoreStateMode,
                     syncParametersBeforeStateReplay:
                         () =>
                         {
                             crouchEntryMirroredDuringRestore =
                                 SyncVanillaLocomotionParameters("stop_pre_state_replay");
                         },
-                    restoreBaseLayerState: !stanceMismatch,
                     // #37 teardown mirror: clear teardown residue from the arms chain before
                     // the vanilla controller is re-assigned; the state replay and crouch entry
                     // below re-pose the live stance within this same frame.
                     afterControllerAssigned: NormalizeBindPoseBeforeControllerSwap);
 
-                bool preserveLiveBaseLayer = restored &&
-                    (stanceMismatch || restoreStateMode == AnimatorStateRestoreMode.Fresh);
                 AnimatorLayerReplayTarget liveReplayTarget = AnimatorLayerReplayTarget.None;
                 int replayedLiveStateHash = 0;
-                bool liveBaseLayerStateReplayed = preserveLiveBaseLayer &&
+                bool liveBaseLayerStateReplayed = restored &&
                     outgoingSessionState != null &&
                     outgoingSessionState.TryReapplyLayerState(
                         bodyAnimator,
@@ -5191,7 +5261,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 // baseline. #38: the trigger CROSSFADES from the restored standing Idle1 while
                 // the camera pin releases mid-blend, so enter CrouchIdle instantly; the trigger
                 // is left for a controller that lacks that state.
-                BaseLayerStanceEntryAction stanceEntry = preserveLiveBaseLayer
+                BaseLayerStanceEntryAction stanceEntry = restored
                     ? ApplyBaseLayerStanceEntry(
                         currentCrouchingKnown,
                         currentCrouching,
@@ -5210,7 +5280,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                         "[RestoreSeam.locomotion] base_layer_state_replayed: " +
                         $"frame={Time.frameCount} handle={context.Handle} phase='stop' " +
                         $"stanceMismatch={stanceMismatch} " +
-                        $"restoreStateMode='{FormatRestoreStateMode(restoreStateMode)}' " +
                         $"replayTarget='{FormatReplayTarget(liveReplayTarget)}' " +
                         $"state='{DescribeBaseLayerState(replayedLiveStateHash)}' " +
                         "action='replay_live_state_on_restored_controller'.");
@@ -5226,7 +5295,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                         "[RestoreSeam.locomotion] crouch_entry_asserted: " +
                         $"frame={Time.frameCount} handle={context.Handle} phase='stop' " +
                         $"stanceMismatch={stanceMismatch} " +
-                        $"restoreStateMode='{FormatRestoreStateMode(restoreStateMode)}' " +
                         $"preStateReplayEntryMirrored={crouchEntryMirroredDuringRestore} " +
                         $"reason='{FormatStanceEntryReason(liveBaseLayerStateReplayed)}' " +
                         $"replayedState='{(liveBaseLayerStateReplayed ? DescribeBaseLayerState(replayedLiveStateHash) : "<none>")}' " +
@@ -5238,19 +5306,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             catch (Exception exception)
             {
                 return "restore_exception:" + exception.Message;
-            }
-        }
-
-        private static string FormatRestoreStateMode(AnimatorStateRestoreMode restoreStateMode)
-        {
-            switch (restoreStateMode)
-            {
-                case AnimatorStateRestoreMode.Crossfade:
-                    return "crossfade";
-                case AnimatorStateRestoreMode.Replay:
-                    return "replay";
-                default:
-                    return "fresh";
             }
         }
 
@@ -7018,15 +7073,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 return;
 
             try { bodyAnimator.SetLayerWeight(layerIndex, Mathf.Clamp01(weight)); } catch { }
-        }
-
-        private float GetLayerWeightOrZero(int layerIndex)
-        {
-            if (layerIndex < 0 || bodyAnimator == null || layerIndex >= bodyAnimator.layerCount)
-                return 0f;
-
-            try { return Mathf.Clamp01(bodyAnimator.GetLayerWeight(layerIndex)); }
-            catch { return 0f; }
         }
 
         private void SetBoolIfExists(string parameterName, bool value)

@@ -32,8 +32,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 new Dictionary<InteractionAnimationHandle, InteractionAnimationSession>();
         private readonly List<InteractionAnimationHandle> tickHandleBuffer =
             new List<InteractionAnimationHandle>();
+        private readonly List<InteractionAnimationSession> postAnimationSessionBuffer =
+            new List<InteractionAnimationSession>();
+        private readonly Action<bool> postAnimationRunnerSwitch;
         private readonly InteractionAnimationResourceLeaseRegistry leases =
             new InteractionAnimationResourceLeaseRegistry();
+        private long nextStartSequence;
+        private bool postAnimationRunnerRunning;
 
         internal InteractionAnimationCoordinator(
             ManualLogSource logger,
@@ -41,7 +46,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             Func<PlayerControllerB> localPlayerResolver = null,
             InteractionAnimationBodyOwnershipValidator bodyOwnershipValidator = null,
             Func<InteractionAnimationContext, IInteractionPresenter,
-                InteractionAnimationSession> sessionFactory = null)
+                InteractionAnimationSession> sessionFactory = null,
+            Action<bool> postAnimationRunnerSwitch = null)
         {
             this.logger = logger;
             this.presenterFactory = presenterFactory ?? CreateDefaultPresenter;
@@ -50,6 +56,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 bodyOwnershipValidator ?? TryValidateBodyAnimatorOwnership;
             this.sessionFactory = sessionFactory ??
                 ((context, presenter) => new InteractionAnimationSession(context, presenter));
+            this.postAnimationRunnerSwitch =
+                postAnimationRunnerSwitch ?? PostAnimationCallbackRunner.SetRunning;
         }
 
         internal bool TryRegisterInteractionPack(
@@ -150,6 +158,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             }
 
             FinalizeConflicts(suspended);
+            session.StartSequence = ++nextStartSequence;
             activeSessions.Add(handle, session);
             logger?.LogDebug(
                 "[LCInteractionAnimationAPI] interaction.started: " +
@@ -197,7 +206,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 return false;
 
             leases.Release(handle);
-            activeSessions.Remove(handle);
+            RemoveActiveSession(handle);
             NotifyEnded(session, reason);
             logger?.LogDebug(
                 "[LCInteractionAnimationAPI] interaction.stopped: " +
@@ -260,6 +269,62 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             return true;
         }
 
+        internal bool TrySetPostAnimationCallback(
+            InteractionAnimationHandle handle,
+            Action<InteractionAnimationFrame> callback)
+        {
+            if (!activeSessions.TryGetValue(handle, out InteractionAnimationSession session) ||
+                !session.IsActive ||
+                session.PresentationKind != InteractionAnimationPresentationKind.BodyWorld)
+                return false;
+            session.PostAnimationCallback = callback;
+            RefreshPostAnimationRunner();
+            return true;
+        }
+
+        // Not re-entrant: only PostAnimationCallbackRunner.LateUpdate calls it. Callbacks may stop
+        // or start sessions; the reused buffer, not the dictionary, is iterated.
+        internal void RunPostAnimationCallbacks(float deltaTime)
+        {
+            postAnimationSessionBuffer.Clear();
+            foreach (InteractionAnimationSession session in activeSessions.Values)
+            {
+                if (session.PostAnimationCallback != null)
+                    InsertByStartSequence(postAnimationSessionBuffer, session);
+            }
+
+            try
+            {
+                for (int i = 0; i < postAnimationSessionBuffer.Count; i++)
+                {
+                    InteractionAnimationSession session = postAnimationSessionBuffer[i];
+                    Action<InteractionAnimationFrame> callback = session.PostAnimationCallback;
+                    if (callback == null || !session.IsActive ||
+                        !activeSessions.TryGetValue(session.Handle, out InteractionAnimationSession current) ||
+                        !ReferenceEquals(current, session))
+                        continue;
+
+                    try
+                    {
+                        callback(session.CreatePostAnimationFrame(deltaTime));
+                    }
+                    catch (Exception exception)
+                    {
+                        if (ReferenceEquals(session.PostAnimationCallback, callback))
+                            session.PostAnimationCallback = null;
+                        logger?.LogWarning(
+                            "[LCInteractionAnimationAPI] post_animation_callback_failed: " +
+                            $"handle={session.Handle} exception={exception}");
+                    }
+                }
+            }
+            finally
+            {
+                postAnimationSessionBuffer.Clear();
+                RefreshPostAnimationRunner();
+            }
+        }
+
         internal void Tick(float deltaTime)
         {
             if (activeSessions.Count == 0)
@@ -291,6 +356,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             InteractionAnimationHandle[] handles = activeSessions.Keys.ToArray();
             for (int i = 0; i < handles.Length; i++)
                 TryStopInteraction(handles[i], InteractionAnimationStopReason.Shutdown);
+            foreach (InteractionAnimationSession session in activeSessions.Values)
+                session.PostAnimationCallback = null;
+            RefreshPostAnimationRunner();
             leases.Clear();
             packs.Clear();
         }
@@ -400,7 +468,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                         if (suspendedSession.TryResume(out _))
                             continue;
                         leases.Release(suspendedSession.Handle);
-                        activeSessions.Remove(suspendedSession.Handle);
+                        RemoveActiveSession(suspendedSession.Handle);
                         suspendedSession.TryStopAndRestore(
                             InteractionAnimationStopReason.PresenterFailure);
                         NotifyEnded(suspendedSession,
@@ -409,7 +477,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     if (session.IsEnded)
                     {
                         leases.Release(session.Handle);
-                        activeSessions.Remove(session.Handle);
+                        RemoveActiveSession(session.Handle);
                         NotifyEnded(session, InteractionAnimationStopReason.PresenterFailure);
                     }
                     suspended = Array.Empty<InteractionAnimationSession>();
@@ -436,7 +504,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     continue;
 
                 leases.Release(session.Handle);
-                activeSessions.Remove(session.Handle);
+                RemoveActiveSession(session.Handle);
                 session.TryStopAndRestore(InteractionAnimationStopReason.PresenterFailure);
                 NotifyEnded(session, InteractionAnimationStopReason.PresenterFailure);
             }
@@ -447,10 +515,49 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             for (int i = 0; i < sessions.Length; i++)
             {
                 InteractionAnimationSession session = sessions[i];
-                activeSessions.Remove(session.Handle);
+                RemoveActiveSession(session.Handle);
                 if (session.TryFinalizeSuspended())
                     NotifyEnded(session, InteractionAnimationStopReason.Interrupted);
             }
+        }
+
+        // Every removal from activeSessions goes through here so a removed session's callback
+        // never runs again and the callback runner stops with the last callback.
+        private void RemoveActiveSession(InteractionAnimationHandle handle)
+        {
+            if (!activeSessions.Remove(handle, out InteractionAnimationSession session) ||
+                session.PostAnimationCallback == null)
+                return;
+            session.PostAnimationCallback = null;
+            RefreshPostAnimationRunner();
+        }
+
+        private void RefreshPostAnimationRunner()
+        {
+            bool running = false;
+            foreach (InteractionAnimationSession session in activeSessions.Values)
+            {
+                if (session.PostAnimationCallback != null)
+                {
+                    running = true;
+                    break;
+                }
+            }
+
+            if (running == postAnimationRunnerRunning)
+                return;
+            postAnimationRunnerRunning = running;
+            postAnimationRunnerSwitch(running);
+        }
+
+        private static void InsertByStartSequence(
+            List<InteractionAnimationSession> sessions,
+            InteractionAnimationSession session)
+        {
+            int index = sessions.Count;
+            while (index > 0 && sessions[index - 1].StartSequence > session.StartSequence)
+                index--;
+            sessions.Insert(index, session);
         }
 
         private void NotifyEnded(

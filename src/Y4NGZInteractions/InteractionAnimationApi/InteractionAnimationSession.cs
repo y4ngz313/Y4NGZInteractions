@@ -46,6 +46,25 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         internal bool IsEnded => ended;
         internal bool HasResourceOwnership => active && presenter.HasResourceOwnership;
 
+        // Set through TrySetInteractionPostAnimationCallback; cleared when the session leaves the
+        // coordinator's active sessions.
+        internal Action<InteractionAnimationFrame> PostAnimationCallback { get; set; }
+
+        // Order in which the coordinator added this session to its active sessions.
+        internal long StartSequence { get; set; }
+
+        internal InteractionAnimationFrame CreatePostAnimationFrame(float deltaTime)
+        {
+            InteractionAnimationViewer viewer = InteractionAnimationViewer.LocalFirstPerson;
+            float weight = 0f;
+            if (presenter is IInteractionPostAnimationFrameSource source)
+            {
+                viewer = source.Viewer;
+                weight = source.SessionWeight;
+            }
+            return new InteractionAnimationFrame(Handle, Player, viewer, weight, deltaTime);
+        }
+
         internal bool TryPreflight(out string reason)
         {
             reason = string.Empty;
@@ -106,7 +125,11 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 return false;
             try
             {
-                presenter.Stop(InteractionAnimationStopReason.Interrupted);
+                // A live body told it is suspending arms no exit pose blend for this stop.
+                if (presenter is LiveBodyAnimatorPresenter liveBody)
+                    liveBody.StopForSuspend();
+                else
+                    presenter.Stop(InteractionAnimationStopReason.Interrupted);
                 active = false;
                 suspended = true;
                 return true;

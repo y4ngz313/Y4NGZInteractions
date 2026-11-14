@@ -183,9 +183,60 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             return coordinator.TryBeginInteractionExit(handle, out reason);
         }
 
+        /// <summary>
+        /// Sets or clears the per-frame callback that runs after animation for a body-world session.
+        /// It runs in LateUpdate at execution order 31000: after the animator, vanilla
+        /// PlayerControllerB.LateUpdate with its Harmony postfixes and every other default-order
+        /// LateUpdate, and before the order-32000 camera stabilizers and the pre-render visor glue.
+        /// Every active session with a callback gets one call per frame, local and remote alike,
+        /// in session start order; a session stopped earlier in the frame gets none.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// A callback may write that player's bone and IK target transforms for the frame, read
+        /// the animator, call TrySetInteraction* and TryFireInteractionTrigger, and call
+        /// TryStopInteraction or TryBeginInteractionExit on its own handle.
+        /// </para>
+        /// <para>
+        /// A callback may not assign the controller, call Animator.Rebind or Animator.Update,
+        /// write the weight of a layer the session owns, or write the camera, visor or arms or
+        /// metarig roots. Its bone writes last only for the frame: the animator overwrites them.
+        /// </para>
+        /// <para>
+        /// A throwing callback is caught, logged once with the handle and the exception, and
+        /// cleared for that session; the session and every other callback keep running.
+        /// </para>
+        /// <para>
+        /// After TryStopInteraction returns, the session is over and the animator is vanilla.
+        /// With Smooth Blending on, the player's skin bones hold the session's last rendered pose
+        /// if the stop ran after that frame's animation pass (LateUpdate, post-animation
+        /// callbacks, end-of-frame coroutines) and the restored vanilla pose if it ran before it
+        /// (Update, FixedUpdate, <c>yield return null</c> coroutines). The stop frame renders the
+        /// session's last pose either way, and the bones then move to the live vanilla pose over
+        /// the next 0.2 seconds. Bone reads in that window see the blended pose, a bone written
+        /// every frame by its own writer becomes the blend's target, InteractionEnded handlers see
+        /// the same state as code right after the stop, and a stop issued from inside a callback
+        /// blends the same way.
+        /// </para>
+        /// </remarks>
+        /// <param name="handle">Active body-world session handle.</param>
+        /// <param name="callback">The callback, or null to clear it.</param>
+        /// <returns>True when the handle is an active body-world session.</returns>
+        public static bool TrySetInteractionPostAnimationCallback(
+            InteractionAnimationHandle handle,
+            Action<InteractionAnimationFrame> callback)
+        {
+            return coordinator != null && coordinator.TrySetPostAnimationCallback(handle, callback);
+        }
+
         internal static void Initialize(InteractionAnimationCoordinator value)
         {
             coordinator = value;
+        }
+
+        internal static void RunPostAnimationCallbacks(float deltaTime)
+        {
+            coordinator?.RunPostAnimationCallbacks(deltaTime);
         }
 
         internal static void NotifyInteractionEnded(InteractionAnimationEndedEventArgs args)

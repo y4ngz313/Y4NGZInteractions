@@ -63,6 +63,49 @@ namespace Y4NGZInteractions
                     "[RestoreSeam.legbind] pre_animation_runner_failed: " + exception.Message +
                     " (rebuilt leg rigs keep the shin pose the rebuild left).");
             }
+
+            // Exit pose blend passes; enabled only while a blend is live (see ExitPoseBlendRunner).
+            try
+            {
+                ExitPoseBlend.AttachRunner(gameObject.AddComponent<ExitPoseBlendRunner>());
+            }
+            catch (Exception exception)
+            {
+                log?.LogWarning(
+                    "[LCInteractionAnimationAPI] exit_pose_blend_runner_failed: " + exception.Message +
+                    " (stops return to vanilla in one frame).");
+            }
+
+            // Puts the restored pose back on blended channels right before each animation pass
+            // (see ExitPoseBlendPlayerLoop); a blend arms only while this system is installed.
+            try
+            {
+                if (!ExitPoseBlendPlayerLoop.Install())
+                {
+                    log?.LogWarning(
+                        "[LCInteractionAnimationAPI] exit_pose_blend_pre_pass_unavailable: the player loop " +
+                        "has no PreLateUpdate phase (stops return to vanilla in one frame).");
+                }
+            }
+            catch (Exception exception)
+            {
+                log?.LogWarning(
+                    "[LCInteractionAnimationAPI] exit_pose_blend_pre_pass_failed: " + exception.Message +
+                    " (stops return to vanilla in one frame).");
+            }
+
+            // Post-animation callbacks; enabled only while a session has one (see
+            // PostAnimationCallbackRunner).
+            try
+            {
+                PostAnimationCallbackRunner.Attach(gameObject.AddComponent<PostAnimationCallbackRunner>());
+            }
+            catch (Exception exception)
+            {
+                log?.LogWarning(
+                    "[LCInteractionAnimationAPI] post_animation_runner_failed: " + exception.Message +
+                    " (post-animation callbacks do not run).");
+            }
         }
 
         private void LateUpdate()
@@ -137,11 +180,29 @@ namespace Y4NGZInteractions
                 log?.LogWarning($"{Plugin.Name} shutdown warning: {exception.Message}");
             }
 
+            // Each blending teardown step runs even when an earlier one throws.
+            RunShutdownStep("exit_pose_blend", ExitPoseBlend.Shutdown);
+            RunShutdownStep("exit_pose_blend_pre_pass", ExitPoseBlendPlayerLoop.Uninstall);
+            RunShutdownStep("post_animation_runner", PostAnimationCallbackRunner.Detach);
+            RunShutdownStep("blending_settings", BlendingSettings.Shutdown);
+
             // After the API shutdown: its stops rebuild rigs and schedule normalizations that
             // no frame will drain.
             LegBindPoseNormalizer.Clear();
 
             harmony?.UnpatchSelf();
+        }
+
+        private void RunShutdownStep(string step, Action shutdown)
+        {
+            try
+            {
+                shutdown();
+            }
+            catch (Exception exception)
+            {
+                log?.LogWarning($"{Plugin.Name} shutdown warning ({step}): {exception.Message}");
+            }
         }
     }
 }

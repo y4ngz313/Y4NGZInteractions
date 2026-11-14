@@ -1,6 +1,25 @@
 # Changelog
 
-Last updated: 2026-11-10
+Last updated: 2026-11-14
+
+## 1.0.7
+
+- Layer fades ease in and out instead of moving in a straight line
+  (y4ngz313 Upgrades issue 848).
+- Interactions blend back into the player's live vanilla pose over 0.2 s when they finish or are cancelled, instead of snapping to it.
+- The `Smooth Blending` config entry (default on) controls both the
+  eased fades and the 0.2 s return; off gives straight-line fades and the
+  instant return. It replaces the `Restore State Mode` entry, which is gone
+  and is deleted from existing config files on first launch.
+- Schema-2 manifests can list `body.layers`: any number of named controller
+  layers (up to 8), each limited to the viewers that should see it, and
+  yielding to vanilla's sprint arms and hands-on-wall pose.
+- A post-animation callback runs a consumer's code after vanilla has posed
+  the player each frame (`TrySetInteractionPostAnimationCallback`).
+- Schema-1 manifests that omit a key now get its documented default instead
+  of the type's zero value.
+- A schema-1 manifest that omits `suppressRigBuilders` now suppresses rig
+  builder rebuilds, as documented (default true); it read false before.
 
 ## 1.0.6
 
@@ -23,7 +42,7 @@ Last updated: 2026-11-10
 - Fixed a single black frame on drop, pocket or weapon switch after a first-person
   live-body interaction: the helmet visor now follows the camera through the
   restore-seam camera pin instead of being left where the interaction's last pose
-  put it (y4ngz313/Y4NGZUpgrades#660).
+  put it (y4ngz313 Upgrades issue 660).
 
 ## 1.0.3
 

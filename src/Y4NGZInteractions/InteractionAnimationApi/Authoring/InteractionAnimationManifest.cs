@@ -147,6 +147,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Authoring
             /// <summary>Gets or sets the first-person-arms animator layer name.</summary>
             public string firstPersonArmsLayer = string.Empty;
 
+            /// <summary>
+            /// Gets or sets extra named controller layers driven after
+            /// <see cref="fullBodyLayer"/> and <see cref="firstPersonArmsLayer"/>, in order.
+            /// Empty means those two layers only.
+            /// </summary>
+            public LayerManifest[] layers = Array.Empty<LayerManifest>();
+
             /// <summary>Gets or sets the starting layer weight.</summary>
             public float startLayerWeight = 1f;
 
@@ -201,6 +208,34 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Authoring
 
             /// <summary>Gets or sets an optional hand-attached prop.</summary>
             public PropManifest prop = new PropManifest();
+        }
+
+        /// <summary>Describes one extra named controller layer of a body-world payload.</summary>
+        [Serializable]
+        public sealed class LayerManifest
+        {
+            /// <summary>
+            /// Gets or sets the controller layer name; the first layer with this name is used.
+            /// </summary>
+            public string name = string.Empty;
+
+            /// <summary>
+            /// Gets or sets who sees the layer: any of <c>localFirstPerson</c>,
+            /// <c>localThirdPerson</c> and <c>remote</c>. Empty means all three.
+            /// </summary>
+            public string[] viewers = Array.Empty<string>();
+
+            /// <summary>
+            /// Gets or sets the base layer weight. Exactly -1 follows the session ramp; a value from
+            /// 0 to 1 pins it. Fades apply either way.
+            /// </summary>
+            public float weight = InteractionAnimationLayerSpecs.FollowRampWeight;
+
+            /// <summary>
+            /// Gets or sets the vanilla poses the layer gives way to: any of <c>sprint</c> and
+            /// <c>handsOnWall</c>. Empty means none.
+            /// </summary>
+            public string[] yieldTo = Array.Empty<string>();
         }
 
         /// <summary>Describes an optional prop attached to a body-world bone.</summary>
