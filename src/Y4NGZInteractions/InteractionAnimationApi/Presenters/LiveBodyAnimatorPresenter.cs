@@ -725,8 +725,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 TryHealCameraDriftAtSessionEntry(player);
 
             Transform gameplayCameraTransform = player.gameplayCamera.transform;
-            Vector3 candidateBaseline =
-                player.transform.InverseTransformPoint(gameplayCameraTransform.position);
+            Vector3 candidateBaseline = player.transform.InverseTransformPoint(
+                ExternalCameraLocalOwner.ChainWorldPosition(player));
 
             // A capture taken while vanilla is gliding the camera between the crouch and stand
             // heights memorizes an intermediate height that belongs to no stance. Wait a few
@@ -858,7 +858,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             try
             {
                 Vector3 cameraPlayerLocal = player.transform.InverseTransformPoint(
-                    player.gameplayCamera.transform.position);
+                    ExternalCameraLocalOwner.ChainWorldPosition(player));
                 float displacement = Vector3.Distance(
                     cameraPlayerLocal,
                     VanillaCameraPlayerLocalRestExpectation);
@@ -931,7 +931,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 }
 
                 Vector3 healedPlayerLocal = player.transform.InverseTransformPoint(
-                    player.gameplayCamera.transform.position);
+                    ExternalCameraLocalOwner.ChainWorldPosition(player));
                 float healedDisplacement = Vector3.Distance(
                     healedPlayerLocal,
                     VanillaCameraPlayerLocalRestExpectation);
@@ -1339,7 +1339,11 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
                 Vector3 stopEntryPlayerLocalPosition =
                     player.transform.InverseTransformPoint(
-                        player.gameplayCamera.transform.position);
+                        ExternalCameraLocalOwner.ChainWorldPosition(player));
+                bool cameraLocalOwnedExternally =
+                    ExternalCameraLocalOwner.TryGetPristineCameraLocal(
+                        player,
+                        out Vector3 pristineCameraLocal);
                 if (cameraPositionStabilizer == null)
                 {
                     cameraPositionStabilizer =
@@ -1349,7 +1353,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 cameraPositionStabilizer.Initialize(
                     player.transform,
                     player.gameplayCamera.transform,
-                    stopEntryPlayerLocalPosition);
+                    stopEntryPlayerLocalPosition,
+                    cameraLocalOwnedExternally ? pristineCameraLocal : (Vector3?)null);
                 // The pin outlives teardown by two LateUpdates, during which vanilla re-authors the
                 // container from its locomotion clips. Holding the pose with a world-space write on
                 // the camera therefore baked (pinTarget - containerPose) into
@@ -1362,7 +1367,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     "[RestoreSeam.pin] pin_started: " +
                     $"frame={Time.frameCount} handle={context.Handle} " +
                     $"playerLocalPosition={stopEntryPlayerLocalPosition} " +
-                    $"holdTarget='{(cameraPositionStabilizer.HoldsAtContainerLevel ? "camera_container" : "unavailable_no_container")}'.");
+                    $"holdTarget='{(cameraPositionStabilizer.HoldsAtContainerLevel ? "camera_container" : "unavailable_no_container")}' " +
+                    $"cameraLocalOwnedExternally={cameraLocalOwnedExternally}.");
             }
             catch (Exception exception)
             {
@@ -1422,8 +1428,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
         /// <summary>
         /// Final stand-down of the restore-scoped camera pin. Whatever the pin wrote, the gameplay
-        /// camera's own local position must end the teardown pristine, so it is restored here and
-        /// the teardown tripwire is re-run over the deferred window that previously escaped it.
+        /// camera's own local position must end the teardown pristine, so it is restored here
+        /// (unless another mod owns it) and the teardown tripwire is re-run over the deferred
+        /// window that previously escaped it.
         /// </summary>
         private void CompleteCameraPinRelease(
             GameNetcodeStuff.PlayerControllerB player,
@@ -2301,7 +2308,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 return;
             }
 
-            Vector3 current = player.transform.InverseTransformPoint(player.gameplayCamera.transform.position);
+            Vector3 current = player.transform.InverseTransformPoint(
+                ExternalCameraLocalOwner.ChainWorldPosition(player));
 
             // Stance-aware viewpoint invariant: a crouch-pose sink (~1.18 m) sits inside both
             // the displacement threshold and the crouch<->stand envelope whitelist below, so
@@ -2820,7 +2828,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 return;
 
             Transform cameraTransform = player.gameplayCamera.transform;
-            Vector3 before = player.transform.InverseTransformPoint(cameraTransform.position);
+            Vector3 before = player.transform.InverseTransformPoint(
+                ExternalCameraLocalOwner.ChainWorldPosition(player));
             float stanceRestHeight = StanceRestHeight(crouching);
             CameraHorizontalRestoreTarget horizontalTarget =
                 CameraStanceRestorePolicy.ResolveHorizontalTarget(
@@ -2849,7 +2858,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 cameraTransform.IsChildOf(container))
             {
                 Vector3 desiredWorld = player.transform.TransformPoint(target);
-                container.position += desiredWorld - cameraTransform.position;
+                container.position +=
+                    desiredWorld - ExternalCameraLocalOwner.ChainWorldPosition(player);
                 correctionTarget = "camera_container";
             }
             else
@@ -2859,7 +2869,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 correctionTarget = "unavailable_no_container";
             }
 
-            Vector3 after = player.transform.InverseTransformPoint(cameraTransform.position);
+            Vector3 after = player.transform.InverseTransformPoint(
+                ExternalCameraLocalOwner.ChainWorldPosition(player));
             string horizontalSource = horizontalTarget.UsedSessionEntry
                 ? "session_entry"
                 : "vanilla_rest_fallback";
@@ -2905,13 +2916,17 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
         /// <summary>
         /// Puts <c>gameplayCamera.localPosition</c> back on its pristine value when it has
-        /// drifted. Returns a short outcome token for the caller's log line.
+        /// drifted, unless another mod owns that position. Returns a short outcome token for
+        /// the caller's log line.
         /// </summary>
         private string RestorePristineGameplayCameraLocalPosition(
             GameNetcodeStuff.PlayerControllerB player)
         {
             if (player == null || player.gameplayCamera == null)
                 return "camera_missing";
+
+            if (ExternalCameraLocalOwner.IsActive)
+                return "owned_externally";
 
             if (!InteractionAnimationApiRestoreDiagnostics
                     .TryGetPristineCameraChainLocalPosition(
@@ -2974,11 +2989,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
                 Vector3 current = player.gameplayCamera.transform.localPosition;
                 Vector3 delta = current - pristineLocal;
-                bool residue = CameraStanceRestorePolicy.ExceedsResidueTolerance(
-                    delta.x,
-                    delta.y,
-                    delta.z,
-                    CameraChainLocalResidueToleranceMeters);
+                // Another mod's own camera offset is not residue this seam left behind.
+                bool cameraLocalOwnedExternally = ExternalCameraLocalOwner.IsActive;
+                bool residue = !cameraLocalOwnedExternally &&
+                    CameraStanceRestorePolicy.ExceedsResidueTolerance(
+                        delta.x,
+                        delta.y,
+                        delta.z,
+                        CameraChainLocalResidueToleranceMeters);
                 string localArmsMeasurements = DescribeChainTargetResidue(
                     player,
                     "localArmsTransform",
@@ -3000,6 +3018,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     $"residue={DescribeVector(delta)} " +
                     $"tolerance={CameraChainLocalResidueToleranceMeters:0.####} " +
                     $"source='{source}' " +
+                    $"cameraLocalOwnedExternally={cameraLocalOwnedExternally} " +
                     localArmsMeasurements + " " + armsMetarigMeasurements;
                 if (residue)
                 {
@@ -3198,7 +3217,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
                 Vector3 beforePlayerLocal = player.gameplayCamera != null
                     ? player.transform.InverseTransformPoint(
-                        player.gameplayCamera.transform.position)
+                        ExternalCameraLocalOwner.ChainWorldPosition(player))
                     : Vector3.zero;
 
                 // Guard stop: put the viewpoint back on the current stance's rest height before
@@ -3241,7 +3260,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 {
                     Vector3 postPristinePlayerLocal = player.gameplayCamera != null
                         ? player.transform.InverseTransformPoint(
-                            player.gameplayCamera.transform.position)
+                            ExternalCameraLocalOwner.ChainWorldPosition(player))
                         : Vector3.zero;
                     CameraHorizontalRestoreTarget postPristineHorizontal =
                         CameraStanceRestorePolicy.ResolveHorizontalTarget(
@@ -3286,7 +3305,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
                 Vector3 afterPlayerLocal = player.gameplayCamera != null
                     ? player.transform.InverseTransformPoint(
-                        player.gameplayCamera.transform.position)
+                        ExternalCameraLocalOwner.ChainWorldPosition(player))
                     : Vector3.zero;
                 // The restore-scoped stabilizer memorized the stop-entry (pre-snap) camera
                 // position; without retargeting, its final restore and two deferred LateUpdates
@@ -7628,6 +7647,10 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         // viewpoint while leaving gameplayCamera.localPosition pristine, and vanilla re-authors the
         // container from its clips on the next frame, so the write is transient by construction.
         private Transform cameraContainer;
+        // Set while another mod owns gameplayCamera.localPosition (ExternalCameraLocalOwner). The
+        // pin then holds the point the camera occupies at this pristine local position, so the
+        // other mod's offset is neither measured nor overwritten.
+        private Vector3? externallyOwnedCameraPristineLocal;
         private Action releaseCallback;
         private Transform followedVisor;
         private Transform followedVisorTarget;
@@ -7642,11 +7665,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         internal void Initialize(
             Transform playerRoot,
             Transform cameraTransform,
-            Vector3 playerLocalPosition)
+            Vector3 playerLocalPosition,
+            Vector3? externallyOwnedCameraPristineLocal)
         {
             this.playerRoot = playerRoot;
             this.cameraTransform = cameraTransform;
             this.playerLocalPosition = playerLocalPosition;
+            this.externallyOwnedCameraPristineLocal = externallyOwnedCameraPristineLocal;
             stanceRelative = false;
             stancePlayer = null;
             cameraContainer = null;
@@ -7734,6 +7759,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 (crouchingAtCapture ? crouchRestHeight : standRestHeight);
             stanceRelative = player != null;
             cameraContainer = null;
+            externallyOwnedCameraPristineLocal = null;
             releaseCallback = null;
             releaseLateUpdates = -1;
             ClearVisorFollow();
@@ -7775,7 +7801,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         {
             if (playerRoot == null || cameraTransform == null)
                 return;
-            playerLocalPosition = playerRoot.InverseTransformPoint(cameraTransform.position);
+            playerLocalPosition = playerRoot.InverseTransformPoint(MeasuredWorldPosition());
             if (!stanceRelative || stancePlayer == null)
                 return;
             bool crouching;
@@ -7783,6 +7809,22 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             catch { return; }
             stanceRelativeHeightOffset = playerLocalPosition.y -
                 (crouching ? crouchRestHeight : standRestHeight);
+        }
+
+        /// <summary>
+        /// The world position the pin holds: the camera, or, while another mod owns the camera's
+        /// local position, the point the camera occupies at its pristine local position.
+        /// </summary>
+        private Vector3 MeasuredWorldPosition()
+        {
+            if (externallyOwnedCameraPristineLocal.HasValue)
+            {
+                Transform cameraParent = cameraTransform.parent;
+                if (cameraParent != null)
+                    return cameraParent.TransformPoint(externallyOwnedCameraPristineLocal.Value);
+            }
+
+            return cameraTransform.position;
         }
 
         internal void ApplyNow()
@@ -7795,9 +7837,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             {
                 // Same correction target as every other stop-time camera repair: move the parent
                 // vanilla authors, never the child whose local position vanilla never rewrites.
-                cameraContainer.position += targetWorld - cameraTransform.position;
+                cameraContainer.position += targetWorld - MeasuredWorldPosition();
                 return;
             }
+
+            // Another mod owns the camera's local position: a world-space write would replace it.
+            if (externallyOwnedCameraPristineLocal.HasValue)
+                return;
 
             cameraTransform.position = targetWorld;
         }

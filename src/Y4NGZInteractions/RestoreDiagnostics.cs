@@ -2258,7 +2258,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         /// <summary>
         /// Restores the pristine camera-chain local positions for the player. Positions only:
         /// camera and container rotations are owned by the dedicated rotation seam restore and
-        /// must not be touched here. Returns false when no pristine baseline exists.
+        /// must not be touched here. The gameplay camera's own local position is left alone
+        /// while another mod owns it (see <see cref="Presenters.ExternalCameraLocalOwner"/>).
+        /// Returns false when no pristine baseline exists.
         /// </summary>
         internal static bool TryRestorePristineCameraChainPositions(
             PlayerControllerB player,
@@ -2284,7 +2286,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             }
 
             source = pristine.Source;
-            restored = pristine.RestorePositions();
+            restored = pristine.RestorePositions(
+                keepGameplayCamera: Presenters.ExternalCameraLocalOwner.IsActive);
             if (restored == 0)
             {
                 reason = "no_transforms_restored";
@@ -2327,8 +2330,10 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         /// One-time upgrade of a player's camera-chain rest baseline from the authored prefab
         /// pose to the current runtime-settled pose. The caller is responsible for verifying the
         /// chain is actually at rest (camera near vanilla rest expectation, player idle,
-        /// standing, not in a special animation) before calling. Returns false without touching
-        /// the baseline when it is missing or already refined.
+        /// standing, not in a special animation) before calling. The gameplay camera keeps its
+        /// authored value while another mod owns its local position: what is there now is that
+        /// mod's offset, not a rest pose. Returns false without touching the baseline when it is
+        /// missing or already refined.
         /// </summary>
         internal static bool TryRefineCameraChainRestBaseline(
             PlayerControllerB player,
@@ -2359,7 +2364,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             }
 
             string beforePositions = pristine.DescribePositions();
-            if (!pristine.RefinePositions(CameraChainRuntimeSettledSource))
+            if (!pristine.RefinePositions(
+                    CameraChainRuntimeSettledSource,
+                    keepGameplayCamera: Presenters.ExternalCameraLocalOwner.IsActive))
             {
                 reason = "no_transforms_refined";
                 return false;
@@ -2379,6 +2386,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         /// </summary>
         internal const string CameraChainAuthoredDefaultSource =
             "player_awake_prefix_authored_default";
+        internal const string GameplayCameraChainTarget = "gameplayCamera";
         internal const string CameraChainRuntimeSettledSource =
             "session_entry_runtime_settled";
         internal const string ThirdPersonRigAuthoredDefaultSource =
@@ -2414,13 +2422,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             /// actually settles the chain; re-reading at a verified-clean, idle session entry
             /// makes later snaps target vanilla's true rest instead of breathing against it.
             /// </summary>
-            internal bool RefinePositions(string newSource)
+            internal bool RefinePositions(string newSource, bool keepGameplayCamera)
             {
                 bool refined = false;
                 for (int i = 0; i < transforms.Length; i++)
                 {
                     Transform target = transforms[i];
-                    if (target == null)
+                    if (target == null || (keepGameplayCamera && IsGameplayCamera(i)))
                         continue;
 
                     localPositions[i] = target.localPosition;
@@ -2430,6 +2438,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 if (refined)
                     Source = newSource;
                 return refined;
+            }
+
+            private bool IsGameplayCamera(int index)
+            {
+                return string.Equals(
+                    names[index],
+                    GameplayCameraChainTarget,
+                    StringComparison.Ordinal);
             }
 
             internal static CameraChainPoseSnapshot Capture(PlayerControllerB player)
@@ -2444,7 +2460,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     SafeGet(() => player.cameraContainerTransform),
                     capturedTransforms, capturedPositions, capturedNames, missing);
                 CaptureTarget(
-                    "gameplayCamera",
+                    GameplayCameraChainTarget,
                     SafeGet(() => player.gameplayCamera != null
                         ? player.gameplayCamera.transform
                         : null),
@@ -2505,13 +2521,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 return false;
             }
 
-            internal int RestorePositions()
+            internal int RestorePositions(bool keepGameplayCamera)
             {
                 int restored = 0;
                 for (int i = 0; i < transforms.Length; i++)
                 {
                     Transform target = transforms[i];
-                    if (target == null)
+                    if (target == null || (keepGameplayCamera && IsGameplayCamera(i)))
                         continue;
 
                     target.localPosition = localPositions[i];
