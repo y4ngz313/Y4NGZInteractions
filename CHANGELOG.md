@@ -1,6 +1,6 @@
 # Changelog
 
-Last updated: 2026-11-14
+Last updated: 2026-11-16
 
 ## 1.0.7
 
@@ -20,6 +20,9 @@ Last updated: 2026-11-14
   of the type's zero value.
 - A schema-1 manifest that omits `suppressRigBuilders` now suppresses rig
   builder rebuilds, as documented (default true); it read false before.
+- With First Person View installed, ending an interaction while looking down
+  no longer shows a frame from inside the body: the library leaves the camera
+  offset that First Person View sets alone (#59).
 
 ## 1.0.6
 
