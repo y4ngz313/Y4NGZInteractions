@@ -15,33 +15,20 @@ with AI-generated content, do not install this mod.
 ## What Y4NGZ Interactions does
 
 Y4NGZ Interactions is a shared animation and item-presentation library used by
-other Y4NGZ mods. It adds nothing on its own. Your mod manager installs it when a
-package needs it.
-
-Mod authors: the API and examples are documented in the repository README.
+other Y4NGZ mods. It adds nothing on its own.
 
 Code and original example assets are licensed under the MIT License.
 
-## Requirements
-
-Your mod manager installs these automatically:
-
-- **BepInExPack**
-
 ## Compatibility
 
-Your mod manager installs Y4NGZ Interactions automatically when a package that requires it is installed.
+These Y4NGZ mods use it:
 
 | Mod | What it adds |
 | --- | --- |
-| **Y4NGZ Upgrades** | Required. Fists, tablet, Worklight Beacon and Lucky-8 animations. |
-| **Better Armory** | Required. Weapon and grenade animations. |
-| **LethalCCTV** | Required. Camera operator animations. |
-| **Contracted** | Optional. Pest Control lever and Bundy finisher animations. |
-
-## GitHub
-
-Source code: https://github.com/y4ngz313/Y4NGZInteractions
+| **Y4NGZ Upgrades** | Fists, tablet, Worklight Beacon and Lucky-8 animations. |
+| **Better Armory** | Weapon and grenade animations. |
+| **LethalCCTV** | Camera operator animations. |
+| **Contracted** | Pest Control lever and Bundy finisher animations. |
 
 ## Bugs
 
