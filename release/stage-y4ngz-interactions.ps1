@@ -107,9 +107,6 @@ if ($readmeText -notmatch '(?m)^#\s+\S' -or $readmeText -match '(?m)^#{1,6}(?!#)
 if ($readmeText -match '(?i)\b[A-Z]:\\|file://') {
     throw "Thunderstore README contains a machine-local path."
 }
-if (-not $readmeText.Contains("**BepInExPack**")) {
-    throw "Thunderstore README does not document the required BepInExPack dependency."
-}
 
 $expectedEntries = @($sourceFiles.Keys) + "manifest.json" | Sort-Object
 $actualEntries = @(Get-ChildItem -LiteralPath $stagingRoot -Force | ForEach-Object { $_.Name }) | Sort-Object

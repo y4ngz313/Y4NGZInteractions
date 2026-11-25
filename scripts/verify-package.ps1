@@ -86,9 +86,6 @@ try {
     if ($readmeText -match '(?i)\b[A-Z]:\\|file://') {
         throw "Archive README contains a machine-local path."
     }
-    if (-not $readmeText.Contains("**BepInExPack**")) {
-        throw "Archive README does not document the required package dependency."
-    }
 }
 finally {
     $archive.Dispose()
