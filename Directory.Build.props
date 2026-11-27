@@ -14,5 +14,7 @@
       https://nuget.bepinex.dev/v3/index.json;
       https://nuget.samboy.dev/v3/index.json
     </RestoreAdditionalProjectSources>
+    <!-- Release DLLs record source and PDB paths under /_/ instead of this machine's checkout path. -->
+    <PathMap Condition="'$(Configuration)' == 'Release'">$(MSBuildThisFileDirectory)=/_/</PathMap>
   </PropertyGroup>
 </Project>
