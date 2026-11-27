@@ -5,6 +5,23 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
+
+# The compiler records the PDB path in each DLL; the Release PathMap in the build props maps the
+# repository root to /_/. Refuse a staged file that still holds a path of the machine that built it.
+function Assert-NoBuildMachinePath([byte[]]$Bytes, [string]$Label, [string]$RepoRoot) {
+    $texts = @([System.Text.Encoding]::UTF8.GetString($Bytes), [System.Text.Encoding]::Unicode.GetString($Bytes))
+    if ($Bytes.Length -gt 1) {
+        $texts += [System.Text.Encoding]::Unicode.GetString($Bytes, 1, $Bytes.Length - 1)
+    }
+    $root = (($RepoRoot.TrimEnd('\', '/') -split '[\\/]') | ForEach-Object { [regex]::Escape($_) }) -join '[\\/]'
+    foreach ($text in $texts) {
+        $hit = [regex]::Match($text, "[A-Za-z]:[\\/]Users[\\/][\x20-\x7E]*|$root[\x20-\x7E]*", 'IgnoreCase')
+        if ($hit.Success) {
+            throw "Staged file '$Label' carries a build-machine path: $($hit.Value.Substring(0, [Math]::Min($hit.Value.Length, 120)))"
+        }
+    }
+}
+
 if ([string]::IsNullOrWhiteSpace($ArchivePath)) {
     [xml]$props = Get-Content -LiteralPath (Join-Path $repoRoot "Directory.Build.props") -Raw
     $version = [string]$props.Project.PropertyGroup.Y4NGZInteractionsVersion
@@ -34,6 +51,18 @@ try {
 
     if (($actual -join "|") -ne ($expected -join "|")) {
         throw "Unexpected package contents. Actual: $($actual -join ', ')"
+    }
+
+    foreach ($entry in @($archive.Entries | Where-Object { $_.Name -match '\.(dll|pdb)$' })) {
+        $buffer = New-Object IO.MemoryStream
+        $entryStream = $entry.Open()
+        try {
+            $entryStream.CopyTo($buffer)
+        }
+        finally {
+            $entryStream.Dispose()
+        }
+        Assert-NoBuildMachinePath -Bytes $buffer.ToArray() -Label $entry.FullName -RepoRoot $repoRoot
     }
 
     $manifestEntry = $archive.GetEntry("manifest.json")
