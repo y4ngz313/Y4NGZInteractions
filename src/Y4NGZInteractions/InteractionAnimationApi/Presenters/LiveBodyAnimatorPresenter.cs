@@ -1745,8 +1745,11 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                         captured.GameplayCameraTransform.localRotation = stopSnapToRest
                             ? Quaternion.Euler(capturedGameplayCameraEuler.x, 0f, 0f)
                             : captured.GameplayCameraLocalRotation;
-                        gameplayCameraEuler =
-                            DescribeEuler(captured.GameplayCameraTransform.localEulerAngles);
+                        if (SeamLoggingEnabled)
+                        {
+                            gameplayCameraEuler =
+                                DescribeEuler(captured.GameplayCameraTransform.localEulerAngles);
+                        }
                         gameplayCameraApplied = true;
                     }
                     catch (Exception exception)
@@ -1782,8 +1785,11 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                             captured.CameraContainerTransform.localRotation =
                                 captured.CameraContainerLocalRotation;
                         }
-                        cameraContainerEuler =
-                            DescribeEuler(captured.CameraContainerTransform.localEulerAngles);
+                        if (SeamLoggingEnabled)
+                        {
+                            cameraContainerEuler =
+                                DescribeEuler(captured.CameraContainerTransform.localEulerAngles);
+                        }
                         cameraContainerApplied = true;
                     }
                     catch (Exception exception)
@@ -2488,7 +2494,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     ref stanceViewpointMismatchSeconds))
                 return false;
 
-            string measurements =
+            string BuildMeasurements() =>
                 $"handle={context.Handle} interaction='{context.Manifest?.interactionId ?? "<none>"}' " +
                 $"crouching={crouching} camera_player_local_y={cameraPlayerLocal.y:0.###} " +
                 $"expected_height={expectedHeight:0.###} height_deviation={heightDeviation:0.###} " +
@@ -2503,7 +2509,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     stanceViewpointGuardExemptLogged = true;
                     if (TelemetryLoggingEnabled) context?.Logger?.LogInfo(
                         "[LCInteractionAnimationAPI] live_body.camera_displacement_guard.stance_mismatch_exempt: " +
-                        measurements + " action='continue_exempt'.");
+                        BuildMeasurements() + " action='continue_exempt'.");
                 }
                 return false;
             }
@@ -2512,7 +2518,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             cameraGuardRequestedStop = true;
             context?.Logger?.LogError(
                 "[LCInteractionAnimationAPI] live_body.camera_displacement_guard.stop: " +
-                measurements + " action='stop_stance_mismatched_viewpoint_height'.");
+                BuildMeasurements() + " action='stop_stance_mismatched_viewpoint_height'.");
             return true;
         }
 
@@ -3003,19 +3009,11 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                         delta.y,
                         delta.z,
                         CameraChainLocalResidueToleranceMeters);
-                string localArmsMeasurements = DescribeChainTargetResidue(
-                    player,
-                    "localArmsTransform",
-                    "localArms",
-                    SafeLocalArmsTransform(player),
-                    out bool localArmsResidue);
-                string armsMetarigMeasurements = DescribeChainTargetResidue(
-                    player,
-                    "playerModelArmsMetarig",
-                    "armsMetarig",
-                    SafeArmsMetarigTransform(player),
-                    out bool armsMetarigResidue);
-                residue = residue || localArmsResidue || armsMetarigResidue;
+                residue = residue ||
+                    ChainTargetHasResidue(
+                        player, "localArmsTransform", SafeLocalArmsTransform(player)) ||
+                    ChainTargetHasResidue(
+                        player, "playerModelArmsMetarig", SafeArmsMetarigTransform(player));
                 if (!residue && !SeamLoggingEnabled)
                     return;
 
@@ -3028,7 +3026,12 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     $"tolerance={CameraChainLocalResidueToleranceMeters:0.####} " +
                     $"source='{source}' " +
                     $"cameraLocalOwnedExternally={cameraLocalOwnedExternally} " +
-                    localArmsMeasurements + " " + armsMetarigMeasurements;
+                    DescribeChainTargetResidue(
+                        player, "localArmsTransform", "localArms",
+                        SafeLocalArmsTransform(player)) + " " +
+                    DescribeChainTargetResidue(
+                        player, "playerModelArmsMetarig", "armsMetarig",
+                        SafeArmsMetarigTransform(player));
                 if (residue)
                 {
                     SeamLogger?.LogWarning(
@@ -3059,10 +3062,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             GameNetcodeStuff.PlayerControllerB player,
             string targetName,
             string label,
-            Transform target,
-            out bool residue)
+            Transform target)
         {
-            residue = false;
             if (target == null)
                 return $"{label}Local=<unresolved> {label}Residue=<unresolved>";
 
@@ -3079,16 +3080,35 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             Vector3 current = target.localPosition;
             Vector3 delta = current - pristineLocal;
-            residue = CameraStanceRestorePolicy.ExceedsResidueTolerance(
+            return $"{label}Local={DescribeVector(current)} " +
+                $"{label}PristineLocal={DescribeVector(pristineLocal)} " +
+                $"{label}Residue={DescribeVector(delta)} " +
+                $"{label}ResidueDetected={ExceedsChainResidue(delta)} " +
+                $"{label}Source='{source}'";
+        }
+
+        private static bool ChainTargetHasResidue(
+            GameNetcodeStuff.PlayerControllerB player,
+            string targetName,
+            Transform target)
+        {
+            return target != null &&
+                InteractionAnimationApiRestoreDiagnostics
+                    .TryGetPristineCameraChainLocalPosition(
+                        player,
+                        targetName,
+                        out Vector3 pristineLocal,
+                        out _) &&
+                ExceedsChainResidue(target.localPosition - pristineLocal);
+        }
+
+        private static bool ExceedsChainResidue(Vector3 delta)
+        {
+            return CameraStanceRestorePolicy.ExceedsResidueTolerance(
                 delta.x,
                 delta.y,
                 delta.z,
                 CameraChainLocalResidueToleranceMeters);
-            return $"{label}Local={DescribeVector(current)} " +
-                $"{label}PristineLocal={DescribeVector(pristineLocal)} " +
-                $"{label}Residue={DescribeVector(delta)} " +
-                $"{label}ResidueDetected={residue} " +
-                $"{label}Source='{source}'";
         }
 
         private static Transform SafeLocalArmsTransform(

@@ -322,7 +322,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     ConfigSection,
                     "Enable IK Bake Probe",
                     true,
-                    "When enabled, the ChainIK and TwoBoneIK constraints under the local player's first-person arms metarig are sampled at four checkpoints per live-body session (first PlayerControllerB.Awake, immediately before the start rebuild, immediately before the restore rebuild, and two LateUpdates after restore) and each sample logs the world-space link distances, maxReach, and tip-versus-target offsets that RigBuilder.Build() bakes permanently into its job arrays. A link distance or bone lossy scale below 0.001 at either pre-build checkpoint raises a warning, because that bake outlives the session and leaves the affected limb mispositioned in vanilla animation. Four compact rounds per session; safe to leave on.");
+                    "When enabled, the ChainIK and TwoBoneIK constraints under the local player's first-person arms metarig are sampled at four checkpoints per live-body session (first PlayerControllerB.Awake, immediately before the start rebuild, immediately before the restore rebuild, and two LateUpdates after restore). The sample records, which carry the world-space link distances, maxReach, and tip-versus-target offsets that RigBuilder.Build() bakes permanently into its job arrays, are logged only when Enable Interaction Telemetry Logger is also on. A link distance or bone lossy scale below 0.001 at either pre-build checkpoint raises a warning regardless, because that bake outlives the session and leaves the affected limb mispositioned in vanilla animation. Four compact rounds per session; safe to leave on.");
                 enableArmsMetarigWriteBackOwner = config.Bind(
                     ConfigSection,
                     "Own Arms Metarig Write-Back",
@@ -994,7 +994,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 return;
 
             bool enabled = ReadEnabled(enableRemoteRigDiffProbe, false);
-            string playerDescription = DescribePlayer(player);
             ActiveRemoteRigProbeIds.TryGetValue(player, out int probeId);
             ActiveRemoteRigProbeIds.Remove(player);
             if (probeId <= 0)
@@ -1002,6 +1001,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
             if (!enabled)
                 return;
+
+            string playerDescription = DescribePlayer(player);
 
             var schedule = new RemoteRigProbeSchedule(
                 player,
@@ -1211,7 +1212,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
         private static void LogIkBakeProbeCore(PlayerControllerB player, string phase)
         {
-            string playerDescription = DescribePlayer(player);
             try
             {
                 Transform playerRoot = player != null ? player.transform : null;
@@ -1240,7 +1240,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                         logger?.LogInfo(
                             "[IkBakeProbe] sample_unavailable: " +
                             $"frame={Time.frameCount} phase='{phase}' " +
-                            $"player='{playerDescription}' reason='rig_root_unavailable'.");
+                            $"player='{DescribePlayer(player)}' reason='rig_root_unavailable'.");
                     }
                     return;
                 }
@@ -1255,7 +1255,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 {
                     logger?.LogInfo(
                         "[IkBakeProbe] sample_begin: " +
-                        $"frame={Time.frameCount} phase='{phase}' player='{playerDescription}' " +
+                        $"frame={Time.frameCount} phase='{phase}' player='{DescribePlayer(player)}' " +
                         $"scanRoot='{scanRootSource}' root='{scanRoot.name}' " +
                         $"twoBoneIkConstraints={twoBoneConstraints.Length} " +
                         $"chainIkConstraints={chainConstraints.Length} " +
@@ -1274,7 +1274,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                             "TwoBoneIK",
                             scanRoot,
                             phase,
-                            playerDescription,
+                            player,
                             warnOnDegenerate,
                             out bool constraintDegenerate))
                     {
@@ -1292,7 +1292,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                             "ChainIK",
                             scanRoot,
                             phase,
-                            playerDescription,
+                            player,
                             warnOnDegenerate,
                             out bool constraintDegenerate))
                     {
@@ -1307,7 +1307,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 {
                     logger?.LogInfo(
                         "[IkBakeProbe] sample_end: " +
-                        $"frame={Time.frameCount} phase='{phase}' player='{playerDescription}' " +
+                        $"frame={Time.frameCount} phase='{phase}' player='{DescribePlayer(player)}' " +
                         $"constraints={logged} degenerate={degenerate}.");
                 }
             }
@@ -1315,7 +1315,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             {
                 logger?.LogWarning(
                     "[IkBakeProbe] sample_failed: " +
-                    $"frame={Time.frameCount} phase='{phase}' player='{playerDescription}' " +
+                    $"frame={Time.frameCount} phase='{phase}' player='{DescribePlayer(player)}' " +
                     $"reason='{SanitizeLogValue(exception.Message)}'.");
             }
         }
@@ -1341,18 +1341,20 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             string kind,
             Transform pathRoot,
             string phase,
-            string playerDescription,
+            PlayerControllerB player,
             bool warnOnDegenerate,
             out bool degenerate)
         {
             degenerate = false;
+            bool telemetry = InteractionTelemetryLoggerEnabled;
             if (component == null)
                 return false;
 
             string path = "<unknown>";
             try
             {
-                path = GetRelativePath(pathRoot, component.transform);
+                if (telemetry)
+                    path = GetRelativePath(pathRoot, component.transform);
                 object data = ReadMember(component, null, "m_Data");
                 Transform root = ReadTransformMember(data, "root", "m_Root");
                 Transform mid = ReadTransformMember(data, "mid", "m_Mid");
@@ -1369,10 +1371,11 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 List<Transform> chain = mid != null
                     ? BuildIkBoneList(root, mid, tip)
                     : ExtractIkChain(root, tip);
-                var links = new StringBuilder();
+                StringBuilder links = telemetry ? new StringBuilder() : null;
                 float maxReach = 0f;
                 float minLinkDistance = float.PositiveInfinity;
-                string minLinkName = "<none>";
+                Transform minLinkFrom = null;
+                Transform minLinkTo = null;
                 for (int i = 0; i + 1 < chain.Count; i++)
                 {
                     Transform from = chain[i];
@@ -1385,13 +1388,17 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     if (distance < minLinkDistance)
                     {
                         minLinkDistance = distance;
-                        minLinkName = from.name + ">" + to.name;
+                        minLinkFrom = from;
+                        minLinkTo = to;
                     }
 
-                    if (links.Length > 0)
-                        links.Append('|');
-                    links.Append(from.name).Append('>').Append(to.name).Append('=')
-                        .Append(FormatFloat(distance));
+                    if (telemetry)
+                    {
+                        if (links.Length > 0)
+                            links.Append('|');
+                        links.Append(from.name).Append('>').Append(to.name).Append('=')
+                            .Append(FormatFloat(distance));
+                    }
                 }
 
                 float minLossyScale = float.PositiveInfinity;
@@ -1410,11 +1417,11 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     (chain.Count > 1 && minLinkDistance < IkBakeDegenerateThreshold) ||
                     minLossyScale < IkBakeDegenerateThreshold;
 
-                if (InteractionTelemetryLoggerEnabled)
+                if (telemetry)
                 {
                     logger?.LogInfo(
                         "[IkBakeProbe] constraint: " +
-                        $"frame={Time.frameCount} phase='{phase}' player='{playerDescription}' " +
+                        $"frame={Time.frameCount} phase='{phase}' player='{DescribePlayer(player)}' " +
                         $"kind='{kind}' path='{path}' weight={FormatFloat(weight)} " +
                         $"maintainTargetPositionOffset={maintainTargetPositionOffset} " +
                         $"maintainTargetRotationOffset={maintainTargetRotationOffset} " +
@@ -1430,11 +1437,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
                 if (degenerate && warnOnDegenerate)
                 {
+                    if (!telemetry)
+                        path = GetRelativePath(pathRoot, component.transform);
                     logger?.LogWarning(
                         "[IkBakeProbe] degenerate_bake_input: " +
-                        $"frame={Time.frameCount} phase='{phase}' player='{playerDescription}' " +
+                        $"frame={Time.frameCount} phase='{phase}' player='{DescribePlayer(player)}' " +
                         $"kind='{kind}' path='{path}' " +
-                        $"smallestLink='{minLinkName}' " +
+                        $"smallestLink='{(minLinkFrom != null ? minLinkFrom.name + ">" + minLinkTo.name : "<none>")}' " +
                         $"smallestLinkDistance={FormatFloat(minLinkDistance)} " +
                         $"smallestLossyScaleBone='{minLossyScaleName}' " +
                         $"smallestLossyScaleComponent={FormatFloat(minLossyScale)} " +
@@ -1452,11 +1461,11 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             }
             catch (Exception exception)
             {
-                if (InteractionTelemetryLoggerEnabled)
+                if (telemetry)
                 {
                     logger?.LogInfo(
                         "[IkBakeProbe] constraint_unavailable: " +
-                        $"frame={Time.frameCount} phase='{phase}' player='{playerDescription}' " +
+                        $"frame={Time.frameCount} phase='{phase}' player='{DescribePlayer(player)}' " +
                         $"kind='{kind}' path='{path}' " +
                         $"reason='read_failed:{SanitizeLogValue(exception.Message)}'.");
                 }
@@ -2355,7 +2364,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 return false;
             }
 
-            string beforePositions = pristine.DescribePositions();
+            string beforePositions =
+                RestoreSeamFrameLoggerEnabled ? pristine.DescribePositions() : null;
             if (!pristine.RefinePositions(
                     CameraChainRuntimeSettledSource,
                     keepGameplayCamera: Presenters.ExternalCameraLocalOwner.IsActive))
