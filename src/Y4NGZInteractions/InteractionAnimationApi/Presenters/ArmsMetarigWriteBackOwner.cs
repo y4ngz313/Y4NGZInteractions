@@ -116,7 +116,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 metarig.localPosition = new Vector3(
                     pristineLocal.x, decision.TargetLocalY, decision.TargetLocalZ);
 
-                if (Time.realtimeSinceStartup >= nextCorrectionLogAllowedAtRealtime)
+                if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled &&
+                    Time.realtimeSinceStartup >= nextCorrectionLogAllowedAtRealtime)
                 {
                     nextCorrectionLogAllowedAtRealtime = Time.realtimeSinceStartup + 1f;
                     InteractionAnimationApiRestoreDiagnostics.StaticLogger?.LogInfo(

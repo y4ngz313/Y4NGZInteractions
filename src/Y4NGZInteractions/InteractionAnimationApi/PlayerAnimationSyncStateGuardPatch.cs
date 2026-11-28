@@ -21,7 +21,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 ref ___previousAnimationStateHash,
                 requiredCount);
 
-            if (currentExpanded || previousExpanded)
+            if ((currentExpanded || previousExpanded) &&
+                InteractionAnimationApiRestoreDiagnostics.InteractionTelemetryLoggerEnabled)
             {
                 Plugin.Log?.LogInfo(
                     "[LCInteractionAnimationAPI] " +

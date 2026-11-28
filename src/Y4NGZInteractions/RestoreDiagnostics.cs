@@ -81,6 +81,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         private static ConfigEntry<bool> enableArmsMetarigWriteBackOwner;
         private static ConfigEntry<bool> enableMetarigRootWriteBackOwner;
         private static ConfigEntry<bool> enableMovementStartProbe;
+        private static ConfigEntry<bool> enableInteractionTelemetryLogger;
         private static InteractionAnimationRestoreDiagnosticsRunner runner;
         private static PlayerControllerB observedPlayer;
         private static PlayerControllerB renderSessionPlayer;
@@ -132,9 +133,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         private static bool samplerFailureLogged;
         private static bool twoBoneIkTypeUnavailableLogged;
         private static bool chainIkTypeUnavailableLogged;
-        private static bool prepareForLiveBodyStartUninitializedLogged;
-        private static bool remoteRigProbeSessionBeginUninitializedLogged;
-        private static bool playerAwakeCaptureUninitializedLogged;
         private static PlayerControllerB ikBakeProbePlayer;
         private static int pendingIkBakeProbeLateUpdates = -1;
         private static int nextRemoteRigProbeId;
@@ -203,6 +201,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
         internal static bool MovementStartProbeEnabled =>
             initialized && ReadEnabled(enableMovementStartProbe, false);
+
+        internal static bool InteractionTelemetryLoggerEnabled =>
+            initialized && ReadEnabled(enableInteractionTelemetryLogger, false);
 
         internal static void Initialize(ConfigFile config, ManualLogSource log)
         {
@@ -321,7 +322,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     ConfigSection,
                     "Enable IK Bake Probe",
                     true,
-                    "When enabled, the ChainIK and TwoBoneIK constraints under the local player's first-person arms metarig are sampled at four checkpoints per live-body session (first PlayerControllerB.Awake, immediately before the start rebuild, immediately before the restore rebuild, and two LateUpdates after restore) and each sample logs the world-space link distances, maxReach, and tip-versus-target offsets that RigBuilder.Build() bakes permanently into its job arrays. A link distance or bone lossy scale below 0.001 at either pre-build checkpoint raises a warning, because that bake outlives the session and leaves the affected limb mispositioned in vanilla animation. Four compact rounds per session; safe to leave on.");
+                    "When enabled, the ChainIK and TwoBoneIK constraints under the local player's first-person arms metarig are sampled at four checkpoints per live-body session (first PlayerControllerB.Awake, immediately before the start rebuild, immediately before the restore rebuild, and two LateUpdates after restore). The sample records, which carry the world-space link distances, maxReach, and tip-versus-target offsets that RigBuilder.Build() bakes permanently into its job arrays, are logged only when Enable Interaction Telemetry Logger is also on. A link distance or bone lossy scale below 0.001 at either pre-build checkpoint raises a warning regardless, because that bake outlives the session and leaves the affected limb mispositioned in vanilla animation. Four compact rounds per session; safe to leave on.");
                 enableArmsMetarigWriteBackOwner = config.Bind(
                     ConfigSection,
                     "Own Arms Metarig Write-Back",
@@ -337,6 +338,11 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     "Enable Movement Start Probe",
                     false,
                     "#37 movement-start probe. Logs one line per frame for the local player around every movement start (move input rise or Walking rise): frame time, move input, walkForce, carry weight, controller velocity and grounded state, position delta, camera player-local position, and base-layer animator state; also logs any frame longer than 50 ms. Diagnostics only; leave false in shipped profiles.");
+                enableInteractionTelemetryLogger = config.Bind(
+                    ConfigSection,
+                    "Enable Interaction Telemetry Logger",
+                    false,
+                    "Logs routine per-session interaction telemetry (live-body start, stop, capture, restore, props, clip packs, rig rebuilds, playback-rate samples, viewmodel and pack/interaction lifecycle events, IK bake probe samples) at Info. Diagnostics only; leave false in shipped profiles.");
             }
 
             bool forceDiagnostics = ForceDiagnosticsForRegressionHunt;
@@ -383,9 +389,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             {
                 try
                 {
-                    GameObject host = Plugin.Host != null ? Plugin.Host.gameObject : null;
-                    if (host != null)
-                        runner = host.AddComponent<InteractionAnimationRestoreDiagnosticsRunner>();
+                    InteractionRuntimeHost host = Plugin.Host;
+                    if (host is not null && host != null)
+                        runner = AddRunner(host);
                     else
                         logger?.LogWarning(
                             "[RestoreSeam] diagnostics_runner_unavailable: plugin GameObject was not available.");
@@ -447,21 +453,30 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             }
         }
 
+        private static InteractionAnimationRestoreDiagnosticsRunner AddRunner(
+            InteractionRuntimeHost host)
+        {
+            return host.gameObject.AddComponent<InteractionAnimationRestoreDiagnosticsRunner>();
+        }
+
+        private static void DestroyRunner(InteractionAnimationRestoreDiagnosticsRunner value)
+        {
+            try
+            {
+                value.enabled = false;
+                UnityEngine.Object.Destroy(value);
+            }
+            catch { }
+        }
+
         internal static void Shutdown()
         {
             initialized = false;
             coordinatorLateUpdateTick = false;
             UnsubscribeRenderSampler();
 
-            if (runner != null)
-            {
-                try
-                {
-                    runner.enabled = false;
-                    UnityEngine.Object.Destroy(runner);
-                }
-                catch { }
-            }
+            if (runner is not null && runner != null)
+                DestroyRunner(runner);
 
             runner = null;
             observedPlayer = null;
@@ -477,9 +492,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             samplerFailureLogged = false;
             twoBoneIkTypeUnavailableLogged = false;
             chainIkTypeUnavailableLogged = false;
-            prepareForLiveBodyStartUninitializedLogged = false;
-            remoteRigProbeSessionBeginUninitializedLogged = false;
-            playerAwakeCaptureUninitializedLogged = false;
             IkBakeProbeAwakeLoggedPlayers.Clear();
             ikBakeProbePlayer = null;
             pendingIkBakeProbeLateUpdates = -1;
@@ -489,6 +501,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             enablePristineRigDiffProbe = null;
             forceDiagnosticsForRegressionHunt = null;
             enableMovementStartProbe = null;
+            enableInteractionTelemetryLogger = null;
             enableArmsMetarigWriteBackOwner = null;
             enableMetarigRootWriteBackOwner = null;
             restoreRigControlPose = null;
@@ -528,18 +541,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         internal static void PrepareForLiveBodyStart(PlayerControllerB player)
         {
             if (!initialized)
-            {
-                if (!prepareForLiveBodyStartUninitializedLogged)
-                {
-                    prepareForLiveBodyStartUninitializedLogged = true;
-                    StaticLogger?.LogInfo(
-                        "[RestoreSeam.tprig] pristine_capture_skipped: " +
-                        $"frame={Time.frameCount} player='{DescribePlayer(player)}' " +
-                        "initialized=False reason='restore_diagnostics_not_initialized' " +
-                        "action='skip_prepare_for_live_body_start'.");
-                }
                 return;
-            }
 
             LogPristineThirdPersonRigPoseAvailability(player);
             if (!IsLocalPlayer(player))
@@ -868,12 +870,15 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     !candidate.EvaluateVanillaRestPlausibility().Plausible)
                 {
                     reason = "candidate_still_implausible";
-                    logger?.LogInfo(
-                        "[RestoreSeam.tprig] rest_baseline_recapture_skipped: " +
-                        $"frame={Time.frameCount} player='{DescribePlayer(player)}' " +
-                        $"candidatePresent={candidate != null} " +
-                        $"candidateComplete={candidate != null && candidate.IsComplete} " +
-                        "reason='candidate_still_implausible' action='retry_next_clean_entry'.");
+                    if (RestoreSeamFrameLoggerEnabled)
+                    {
+                        logger?.LogInfo(
+                            "[RestoreSeam.tprig] rest_baseline_recapture_skipped: " +
+                            $"frame={Time.frameCount} player='{DescribePlayer(player)}' " +
+                            $"candidatePresent={candidate != null} " +
+                            $"candidateComplete={candidate != null && candidate.IsComplete} " +
+                            "reason='candidate_still_implausible' action='retry_next_clean_entry'.");
+                    }
                     return false;
                 }
 
@@ -883,23 +888,29 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     plausibleAtCapture: true,
                     ThirdPersonRigRuntimeSettledSource);
                 PristineThirdPersonRigPoses[player] = candidate;
-                logger?.LogInfo(
-                    "[RestoreSeam.tprig] rest_baseline_recaptured: " +
-                    $"frame={Time.frameCount} player='{DescribePlayer(player)}' " +
-                    $"outliersBefore={storedPlausibility.PositionOutliers + storedPlausibility.RotationOutliers + storedPlausibility.ScaleOutliers} " +
-                    $"fullPoseTransforms={candidate.FullPoseCount} " +
-                    $"rotationOnlyTransforms={candidate.RotationOnlyCount} " +
-                    $"source='{ThirdPersonRigRuntimeSettledSource}' " +
-                    "action='replace_authored_default_with_runtime_settled'.");
+                if (RestoreSeamFrameLoggerEnabled)
+                {
+                    logger?.LogInfo(
+                        "[RestoreSeam.tprig] rest_baseline_recaptured: " +
+                        $"frame={Time.frameCount} player='{DescribePlayer(player)}' " +
+                        $"outliersBefore={storedPlausibility.PositionOutliers + storedPlausibility.RotationOutliers + storedPlausibility.ScaleOutliers} " +
+                        $"fullPoseTransforms={candidate.FullPoseCount} " +
+                        $"rotationOnlyTransforms={candidate.RotationOnlyCount} " +
+                        $"source='{ThirdPersonRigRuntimeSettledSource}' " +
+                        "action='replace_authored_default_with_runtime_settled'.");
+                }
                 return true;
             }
             catch (Exception exception)
             {
                 reason = "recapture_failed:" + exception.Message;
-                logger?.LogInfo(
-                    "[RestoreSeam.tprig] rest_baseline_recapture_skipped: " +
-                    $"frame={Time.frameCount} player='{DescribePlayer(player)}' " +
-                    $"reason='{SanitizeLogValue(reason)}' action='retry_next_clean_entry'.");
+                if (RestoreSeamFrameLoggerEnabled)
+                {
+                    logger?.LogInfo(
+                        "[RestoreSeam.tprig] rest_baseline_recapture_skipped: " +
+                        $"frame={Time.frameCount} player='{DescribePlayer(player)}' " +
+                        $"reason='{SanitizeLogValue(reason)}' action='retry_next_clean_entry'.");
+                }
                 return false;
             }
         }
@@ -964,32 +975,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         internal static void NotifyRemoteRigProbeSessionBegin(PlayerControllerB player)
         {
             if (!initialized)
-            {
-                if (!remoteRigProbeSessionBeginUninitializedLogged)
-                {
-                    remoteRigProbeSessionBeginUninitializedLogged = true;
-                    StaticLogger?.LogInfo(
-                        "[RemoteRigDiff] gate: " +
-                        $"frame={Time.frameCount} phase='session_begin' " +
-                        $"player='{DescribePlayer(player)}' initialized=False " +
-                        "action='skip_restore_diagnostics_not_initialized'.");
-                }
                 return;
-            }
 
             if (player == null || IsLocalPlayer(player))
                 return;
 
-            bool enabled = ReadEnabled(enableRemoteRigDiffProbe, false);
-            string playerDescription = DescribePlayer(player);
-            if (!enabled)
-            {
-                logger?.LogInfo(
-                    "[RemoteRigDiff] gate: " +
-                    $"frame={Time.frameCount} phase='session_begin' " +
-                    $"player='{playerDescription}' enabled=False action='skip'.");
+            if (!ReadEnabled(enableRemoteRigDiffProbe, false))
                 return;
-            }
 
             int probeId = ++nextRemoteRigProbeId;
             ActiveRemoteRigProbeIds[player] = probeId;
@@ -1002,21 +994,15 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 return;
 
             bool enabled = ReadEnabled(enableRemoteRigDiffProbe, false);
-            string playerDescription = DescribePlayer(player);
             ActiveRemoteRigProbeIds.TryGetValue(player, out int probeId);
             ActiveRemoteRigProbeIds.Remove(player);
             if (probeId <= 0)
                 probeId = ++nextRemoteRigProbeId;
 
             if (!enabled)
-            {
-                logger?.LogInfo(
-                    "[RemoteRigDiff] gate: " +
-                    $"frame={Time.frameCount} phase='restore_schedule' " +
-                    $"probeId={probeId} player='{playerDescription}' " +
-                    "enabled=False action='skip'.");
                 return;
-            }
+
+            string playerDescription = DescribePlayer(player);
 
             var schedule = new RemoteRigProbeSchedule(
                 player,
@@ -1044,12 +1030,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
                 if (!enabled)
                 {
-                    logger?.LogInfo(
-                        "[RemoteRigDiff] gate: " +
-                        $"frame={Time.frameCount} phase='scheduled_samples' " +
-                        $"probeId={schedule.ProbeId} " +
-                        $"player='{DescribePlayer(schedule.Player)}' " +
-                        "enabled=False action='cancel'.");
                     PendingRemoteRigProbes.RemoveAt(i);
                     continue;
                 }
@@ -1232,7 +1212,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
         private static void LogIkBakeProbeCore(PlayerControllerB player, string phase)
         {
-            string playerDescription = DescribePlayer(player);
             try
             {
                 Transform playerRoot = player != null ? player.transform : null;
@@ -1256,10 +1235,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
                 if (scanRoot == null)
                 {
-                    logger?.LogInfo(
-                        "[IkBakeProbe] sample_unavailable: " +
-                        $"frame={Time.frameCount} phase='{phase}' " +
-                        $"player='{playerDescription}' reason='rig_root_unavailable'.");
+                    if (InteractionTelemetryLoggerEnabled)
+                    {
+                        logger?.LogInfo(
+                            "[IkBakeProbe] sample_unavailable: " +
+                            $"frame={Time.frameCount} phase='{phase}' " +
+                            $"player='{DescribePlayer(player)}' reason='rig_root_unavailable'.");
+                    }
                     return;
                 }
 
@@ -1269,13 +1251,16 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     ReadIkConstraints(scanRoot, twoBoneIkConstraintType);
                 Component[] chainConstraints =
                     ReadIkConstraints(scanRoot, chainIkConstraintType);
-                logger?.LogInfo(
-                    "[IkBakeProbe] sample_begin: " +
-                    $"frame={Time.frameCount} phase='{phase}' player='{playerDescription}' " +
-                    $"scanRoot='{scanRootSource}' root='{scanRoot.name}' " +
-                    $"twoBoneIkConstraints={twoBoneConstraints.Length} " +
-                    $"chainIkConstraints={chainConstraints.Length} " +
-                    $"degenerateThreshold={FormatFloat(IkBakeDegenerateThreshold)}.");
+                if (InteractionTelemetryLoggerEnabled)
+                {
+                    logger?.LogInfo(
+                        "[IkBakeProbe] sample_begin: " +
+                        $"frame={Time.frameCount} phase='{phase}' player='{DescribePlayer(player)}' " +
+                        $"scanRoot='{scanRootSource}' root='{scanRoot.name}' " +
+                        $"twoBoneIkConstraints={twoBoneConstraints.Length} " +
+                        $"chainIkConstraints={chainConstraints.Length} " +
+                        $"degenerateThreshold={FormatFloat(IkBakeDegenerateThreshold)}.");
+                }
 
                 bool warnOnDegenerate =
                     string.Equals(phase, IkBakeProbePhasePreStartBuild, StringComparison.Ordinal) ||
@@ -1289,7 +1274,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                             "TwoBoneIK",
                             scanRoot,
                             phase,
-                            playerDescription,
+                            player,
                             warnOnDegenerate,
                             out bool constraintDegenerate))
                     {
@@ -1307,7 +1292,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                             "ChainIK",
                             scanRoot,
                             phase,
-                            playerDescription,
+                            player,
                             warnOnDegenerate,
                             out bool constraintDegenerate))
                     {
@@ -1318,16 +1303,19 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                         degenerate++;
                 }
 
-                logger?.LogInfo(
-                    "[IkBakeProbe] sample_end: " +
-                    $"frame={Time.frameCount} phase='{phase}' player='{playerDescription}' " +
-                    $"constraints={logged} degenerate={degenerate}.");
+                if (InteractionTelemetryLoggerEnabled)
+                {
+                    logger?.LogInfo(
+                        "[IkBakeProbe] sample_end: " +
+                        $"frame={Time.frameCount} phase='{phase}' player='{DescribePlayer(player)}' " +
+                        $"constraints={logged} degenerate={degenerate}.");
+                }
             }
             catch (Exception exception)
             {
                 logger?.LogWarning(
                     "[IkBakeProbe] sample_failed: " +
-                    $"frame={Time.frameCount} phase='{phase}' player='{playerDescription}' " +
+                    $"frame={Time.frameCount} phase='{phase}' player='{DescribePlayer(player)}' " +
                     $"reason='{SanitizeLogValue(exception.Message)}'.");
             }
         }
@@ -1353,18 +1341,20 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             string kind,
             Transform pathRoot,
             string phase,
-            string playerDescription,
+            PlayerControllerB player,
             bool warnOnDegenerate,
             out bool degenerate)
         {
             degenerate = false;
+            bool telemetry = InteractionTelemetryLoggerEnabled;
             if (component == null)
                 return false;
 
             string path = "<unknown>";
             try
             {
-                path = GetRelativePath(pathRoot, component.transform);
+                if (telemetry)
+                    path = GetRelativePath(pathRoot, component.transform);
                 object data = ReadMember(component, null, "m_Data");
                 Transform root = ReadTransformMember(data, "root", "m_Root");
                 Transform mid = ReadTransformMember(data, "mid", "m_Mid");
@@ -1381,10 +1371,11 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 List<Transform> chain = mid != null
                     ? BuildIkBoneList(root, mid, tip)
                     : ExtractIkChain(root, tip);
-                var links = new StringBuilder();
+                StringBuilder links = telemetry ? new StringBuilder() : null;
                 float maxReach = 0f;
                 float minLinkDistance = float.PositiveInfinity;
-                string minLinkName = "<none>";
+                Transform minLinkFrom = null;
+                Transform minLinkTo = null;
                 for (int i = 0; i + 1 < chain.Count; i++)
                 {
                     Transform from = chain[i];
@@ -1397,13 +1388,17 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     if (distance < minLinkDistance)
                     {
                         minLinkDistance = distance;
-                        minLinkName = from.name + ">" + to.name;
+                        minLinkFrom = from;
+                        minLinkTo = to;
                     }
 
-                    if (links.Length > 0)
-                        links.Append('|');
-                    links.Append(from.name).Append('>').Append(to.name).Append('=')
-                        .Append(FormatFloat(distance));
+                    if (telemetry)
+                    {
+                        if (links.Length > 0)
+                            links.Append('|');
+                        links.Append(from.name).Append('>').Append(to.name).Append('=')
+                            .Append(FormatFloat(distance));
+                    }
                 }
 
                 float minLossyScale = float.PositiveInfinity;
@@ -1422,28 +1417,33 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     (chain.Count > 1 && minLinkDistance < IkBakeDegenerateThreshold) ||
                     minLossyScale < IkBakeDegenerateThreshold;
 
-                logger?.LogInfo(
-                    "[IkBakeProbe] constraint: " +
-                    $"frame={Time.frameCount} phase='{phase}' player='{playerDescription}' " +
-                    $"kind='{kind}' path='{path}' weight={FormatFloat(weight)} " +
-                    $"maintainTargetPositionOffset={maintainTargetPositionOffset} " +
-                    $"maintainTargetRotationOffset={maintainTargetRotationOffset} " +
-                    $"rootLossyScaleX={FormatLossyScaleX(root)} " +
-                    $"midLossyScaleX={FormatLossyScaleX(mid)} " +
-                    $"tipLossyScaleX={FormatLossyScaleX(tip)} " +
-                    $"chainLength={chain.Count} links='{DescribeIkLinks(links, root, mid, tip)}' " +
-                    $"maxReach={FormatFloat(maxReach)} " +
-                    $"tipToTargetDistance={FormatFloat(tipToTargetDistance)} " +
-                    $"tipToTargetAngleDegrees={FormatFloat(tipToTargetAngle)} " +
-                    $"degenerate={degenerate}.");
+                if (telemetry)
+                {
+                    logger?.LogInfo(
+                        "[IkBakeProbe] constraint: " +
+                        $"frame={Time.frameCount} phase='{phase}' player='{DescribePlayer(player)}' " +
+                        $"kind='{kind}' path='{path}' weight={FormatFloat(weight)} " +
+                        $"maintainTargetPositionOffset={maintainTargetPositionOffset} " +
+                        $"maintainTargetRotationOffset={maintainTargetRotationOffset} " +
+                        $"rootLossyScaleX={FormatLossyScaleX(root)} " +
+                        $"midLossyScaleX={FormatLossyScaleX(mid)} " +
+                        $"tipLossyScaleX={FormatLossyScaleX(tip)} " +
+                        $"chainLength={chain.Count} links='{DescribeIkLinks(links, root, mid, tip)}' " +
+                        $"maxReach={FormatFloat(maxReach)} " +
+                        $"tipToTargetDistance={FormatFloat(tipToTargetDistance)} " +
+                        $"tipToTargetAngleDegrees={FormatFloat(tipToTargetAngle)} " +
+                        $"degenerate={degenerate}.");
+                }
 
                 if (degenerate && warnOnDegenerate)
                 {
+                    if (!telemetry)
+                        path = GetRelativePath(pathRoot, component.transform);
                     logger?.LogWarning(
                         "[IkBakeProbe] degenerate_bake_input: " +
-                        $"frame={Time.frameCount} phase='{phase}' player='{playerDescription}' " +
+                        $"frame={Time.frameCount} phase='{phase}' player='{DescribePlayer(player)}' " +
                         $"kind='{kind}' path='{path}' " +
-                        $"smallestLink='{minLinkName}' " +
+                        $"smallestLink='{(minLinkFrom != null ? minLinkFrom.name + ">" + minLinkTo.name : "<none>")}' " +
                         $"smallestLinkDistance={FormatFloat(minLinkDistance)} " +
                         $"smallestLossyScaleBone='{minLossyScaleName}' " +
                         $"smallestLossyScaleComponent={FormatFloat(minLossyScale)} " +
@@ -1461,11 +1461,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             }
             catch (Exception exception)
             {
-                logger?.LogInfo(
-                    "[IkBakeProbe] constraint_unavailable: " +
-                    $"frame={Time.frameCount} phase='{phase}' player='{playerDescription}' " +
-                    $"kind='{kind}' path='{path}' " +
-                    $"reason='read_failed:{SanitizeLogValue(exception.Message)}'.");
+                if (telemetry)
+                {
+                    logger?.LogInfo(
+                        "[IkBakeProbe] constraint_unavailable: " +
+                        $"frame={Time.frameCount} phase='{phase}' player='{DescribePlayer(player)}' " +
+                        $"kind='{kind}' path='{path}' " +
+                        $"reason='read_failed:{SanitizeLogValue(exception.Message)}'.");
+                }
                 return false;
             }
         }
@@ -2192,18 +2195,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             PlayerControllerB player)
         {
             if (!initialized)
-            {
-                if (!playerAwakeCaptureUninitializedLogged)
-                {
-                    playerAwakeCaptureUninitializedLogged = true;
-                    StaticLogger?.LogInfo(
-                        "[RestoreSeam.tprig] pristine_capture_skipped: " +
-                        $"frame={Time.frameCount} player='{DescribePlayer(player)}' " +
-                        $"initialized=False source='{ThirdPersonRigAuthoredDefaultSource}' " +
-                        "reason='restore_diagnostics_not_initialized' action='skip'.");
-                }
                 return;
-            }
 
             TryCapturePristineThirdPersonRigPose(player);
         }
@@ -2228,30 +2220,39 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 CameraChainPoseSnapshot candidate = CameraChainPoseSnapshot.Capture(player);
                 if (candidate == null || candidate.Count == 0)
                 {
-                    StaticLogger?.LogInfo(
-                        "[RestoreSeam.camerachain] pristine_capture_skipped: " +
-                        $"frame={Time.frameCount} player='{DescribePlayer(player)}' " +
-                        $"source='{CameraChainAuthoredDefaultSource}' " +
-                        "reason='camera_chain_unavailable' action='use_session_entry_fallback'.");
+                    if (RestoreSeamFrameLoggerEnabled)
+                    {
+                        StaticLogger?.LogInfo(
+                            "[RestoreSeam.camerachain] pristine_capture_skipped: " +
+                            $"frame={Time.frameCount} player='{DescribePlayer(player)}' " +
+                            $"source='{CameraChainAuthoredDefaultSource}' " +
+                            "reason='camera_chain_unavailable' action='use_session_entry_fallback'.");
+                    }
                     return;
                 }
 
                 PristineCameraChainPoses[player] = candidate;
-                StaticLogger?.LogInfo(
-                    "[RestoreSeam.camerachain] pristine_captured: " +
-                    $"frame={Time.frameCount} player='{DescribePlayer(player)}' " +
-                    $"transforms={candidate.Count} missing='{candidate.MissingTargets}' " +
-                    $"{candidate.DescribePositions()} " +
-                    $"source='{CameraChainAuthoredDefaultSource}'.");
+                if (RestoreSeamFrameLoggerEnabled)
+                {
+                    StaticLogger?.LogInfo(
+                        "[RestoreSeam.camerachain] pristine_captured: " +
+                        $"frame={Time.frameCount} player='{DescribePlayer(player)}' " +
+                        $"transforms={candidate.Count} missing='{candidate.MissingTargets}' " +
+                        $"{candidate.DescribePositions()} " +
+                        $"source='{CameraChainAuthoredDefaultSource}'.");
+                }
             }
             catch (Exception exception)
             {
-                StaticLogger?.LogInfo(
-                    "[RestoreSeam.camerachain] pristine_capture_skipped: " +
-                    $"frame={Time.frameCount} player='{DescribePlayer(player)}' " +
-                    $"source='{CameraChainAuthoredDefaultSource}' " +
-                    $"reason='capture_failed:{SanitizeLogValue(exception.Message)}' " +
-                    "action='use_session_entry_fallback'.");
+                if (RestoreSeamFrameLoggerEnabled)
+                {
+                    StaticLogger?.LogInfo(
+                        "[RestoreSeam.camerachain] pristine_capture_skipped: " +
+                        $"frame={Time.frameCount} player='{DescribePlayer(player)}' " +
+                        $"source='{CameraChainAuthoredDefaultSource}' " +
+                        $"reason='capture_failed:{SanitizeLogValue(exception.Message)}' " +
+                        "action='use_session_entry_fallback'.");
+                }
             }
         }
 
@@ -2363,7 +2364,8 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 return false;
             }
 
-            string beforePositions = pristine.DescribePositions();
+            string beforePositions =
+                RestoreSeamFrameLoggerEnabled ? pristine.DescribePositions() : null;
             if (!pristine.RefinePositions(
                     CameraChainRuntimeSettledSource,
                     keepGameplayCamera: Presenters.ExternalCameraLocalOwner.IsActive))
@@ -2372,11 +2374,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 return false;
             }
 
-            StaticLogger?.LogInfo(
-                "[RestoreSeam.camerachain] rest_baseline_refined: " +
-                $"frame={Time.frameCount} player='{DescribePlayer(player)}' " +
-                $"before[{beforePositions}] after[{pristine.DescribePositions()}] " +
-                $"source='{CameraChainRuntimeSettledSource}'.");
+            if (RestoreSeamFrameLoggerEnabled)
+            {
+                StaticLogger?.LogInfo(
+                    "[RestoreSeam.camerachain] rest_baseline_refined: " +
+                    $"frame={Time.frameCount} player='{DescribePlayer(player)}' " +
+                    $"before[{beforePositions}] after[{pristine.DescribePositions()}] " +
+                    $"source='{CameraChainRuntimeSettledSource}'.");
+            }
             return true;
         }
 
@@ -2548,6 +2553,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
         private static void LogPristineThirdPersonRigPoseAvailability(PlayerControllerB player)
         {
+            if (!RestoreSeamFrameLoggerEnabled)
+                return;
+
             bool enabled =
                 ReadEnabled(restorePristineThirdPersonRigControlPose, true);
             bool localPlayer = IsLocalPlayer(player);
@@ -2593,35 +2601,45 @@ namespace Y4NGZInteractions.InteractionAnimationApi
         {
             bool enabled =
                 ReadEnabled(restorePristineThirdPersonRigControlPose, true);
+            bool seamLog = RestoreSeamFrameLoggerEnabled;
             bool localPlayer = IsLocalPlayer(player);
-            string playerDescription = DescribePlayer(player);
+            string playerDescription = seamLog ? DescribePlayer(player) : null;
             const string source = ThirdPersonRigAuthoredDefaultSource;
             if (!enabled)
             {
-                logger?.LogInfo(
-                    "[RestoreSeam.tprig] pristine_capture_skipped: " +
-                    $"frame={Time.frameCount} player='{playerDescription}' " +
-                    $"localPlayer={localPlayer} enabled=False source='{source}' " +
-                    "reason='kill_switch_disabled' action='use_equip_fallback'.");
+                if (seamLog)
+                {
+                    logger?.LogInfo(
+                        "[RestoreSeam.tprig] pristine_capture_skipped: " +
+                        $"frame={Time.frameCount} player='{playerDescription}' " +
+                        $"localPlayer={localPlayer} enabled=False source='{source}' " +
+                        "reason='kill_switch_disabled' action='use_equip_fallback'.");
+                }
                 return;
             }
 
             if (player == null)
             {
-                logger?.LogInfo(
-                    "[RestoreSeam.tprig] pristine_capture_skipped: " +
-                    $"frame={Time.frameCount} player='<null>' localPlayer=False enabled=True " +
-                    $"source='{source}' reason='player_missing' action='skip'.");
+                if (seamLog)
+                {
+                    logger?.LogInfo(
+                        "[RestoreSeam.tprig] pristine_capture_skipped: " +
+                        $"frame={Time.frameCount} player='<null>' localPlayer=False enabled=True " +
+                        $"source='{source}' reason='player_missing' action='skip'.");
+                }
                 return;
             }
 
             if (PristineThirdPersonRigPoses.ContainsKey(player))
             {
-                logger?.LogInfo(
-                    "[RestoreSeam.tprig] pristine_capture_skipped: " +
-                    $"frame={Time.frameCount} player='{playerDescription}' " +
-                    $"localPlayer={localPlayer} enabled=True source='{source}' " +
-                    "reason='already_captured' baseline_contaminated=False action='keep_pristine'.");
+                if (seamLog)
+                {
+                    logger?.LogInfo(
+                        "[RestoreSeam.tprig] pristine_capture_skipped: " +
+                        $"frame={Time.frameCount} player='{playerDescription}' " +
+                        $"localPlayer={localPlayer} enabled=True source='{source}' " +
+                        "reason='already_captured' baseline_contaminated=False action='keep_pristine'.");
+                }
                 return;
             }
 
@@ -2631,36 +2649,42 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     ThirdPersonRigPoseSnapshot.Capture(player);
                 if (candidate == null || candidate.TotalCount == 0)
                 {
-                    logger?.LogInfo(
-                        "[RestoreSeam.tprig] pristine_capture_skipped: " +
-                        $"frame={Time.frameCount} player='{playerDescription}' " +
-                        $"localPlayer={localPlayer} enabled=True source='{source}' " +
-                        "reason='third_person_rig_unavailable' baseline_contaminated=True " +
-                        "action='use_equip_fallback'.");
+                    if (seamLog)
+                    {
+                        logger?.LogInfo(
+                            "[RestoreSeam.tprig] pristine_capture_skipped: " +
+                            $"frame={Time.frameCount} player='{playerDescription}' " +
+                            $"localPlayer={localPlayer} enabled=True source='{source}' " +
+                            "reason='third_person_rig_unavailable' baseline_contaminated=True " +
+                            "action='use_equip_fallback'.");
+                    }
                     return;
                 }
 
                 ThirdPersonRigPlausibility plausibility =
                     candidate.EvaluateVanillaRestPlausibility();
-                string sanityAction = plausibility.Plausible
-                    ? "accept_authored_default"
-                    : "accept_authored_default_pending_runtime_recapture";
-                logger?.LogInfo(
-                    "[RestoreSeam.tprig] pristine_capture_sanity: " +
-                    $"frame={Time.frameCount} player='{playerDescription}' " +
-                    $"localPlayer={localPlayer} enabled=True source='{source}' " +
-                    $"plausibleAgainstVanillaRest={plausibility.Plausible} " +
-                    $"complete={candidate.IsComplete} missing='{candidate.MissingTargets}' " +
-                    $"positionOutliers={plausibility.PositionOutliers} " +
-                    $"rotationOutliers={plausibility.RotationOutliers} " +
-                    $"scaleOutliers={plausibility.ScaleOutliers} " +
-                    $"maxPositionDelta={FormatFloat(plausibility.MaxPositionDelta)} " +
-                    $"maxRotationDeltaDegrees={FormatFloat(plausibility.MaxRotationDeltaDegrees)} " +
-                    $"maxScaleDelta={FormatFloat(plausibility.MaxScaleDelta)} " +
-                    $"positionThreshold={FormatFloat(ThirdPersonRigRestPositionThreshold)} " +
-                    $"rotationThresholdDegrees={FormatFloat(ThirdPersonRigRestRotationThresholdDegrees)} " +
-                    $"scaleThreshold={FormatFloat(ThirdPersonRigRestScaleThreshold)} " +
-                    $"reason='{plausibility.Reason}' action='{sanityAction}'.");
+                if (seamLog)
+                {
+                    string sanityAction = plausibility.Plausible
+                        ? "accept_authored_default"
+                        : "accept_authored_default_pending_runtime_recapture";
+                    logger?.LogInfo(
+                        "[RestoreSeam.tprig] pristine_capture_sanity: " +
+                        $"frame={Time.frameCount} player='{playerDescription}' " +
+                        $"localPlayer={localPlayer} enabled=True source='{source}' " +
+                        $"plausibleAgainstVanillaRest={plausibility.Plausible} " +
+                        $"complete={candidate.IsComplete} missing='{candidate.MissingTargets}' " +
+                        $"positionOutliers={plausibility.PositionOutliers} " +
+                        $"rotationOutliers={plausibility.RotationOutliers} " +
+                        $"scaleOutliers={plausibility.ScaleOutliers} " +
+                        $"maxPositionDelta={FormatFloat(plausibility.MaxPositionDelta)} " +
+                        $"maxRotationDeltaDegrees={FormatFloat(plausibility.MaxRotationDeltaDegrees)} " +
+                        $"maxScaleDelta={FormatFloat(plausibility.MaxScaleDelta)} " +
+                        $"positionThreshold={FormatFloat(ThirdPersonRigRestPositionThreshold)} " +
+                        $"rotationThresholdDegrees={FormatFloat(ThirdPersonRigRestRotationThresholdDegrees)} " +
+                        $"scaleThreshold={FormatFloat(ThirdPersonRigRestScaleThreshold)} " +
+                        $"reason='{plausibility.Reason}' action='{sanityAction}'.");
+                }
 
                 // This runs before PlayerControllerB.Awake and before movement clips can evaluate.
                 // Vanilla-rest comparison is useful telemetry, but movement-aware authored defaults
@@ -2669,24 +2693,30 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 // idle session entry can replace it with a runtime-settled recapture.
                 candidate.SetCaptureMetadata(plausibility.Plausible, source);
                 PristineThirdPersonRigPoses[player] = candidate;
-                logger?.LogInfo(
-                    "[RestoreSeam.tprig] pristine_captured: " +
-                    $"frame={Time.frameCount} player='{playerDescription}' " +
-                    $"localPlayer={localPlayer} enabled=True baseline_contaminated=False " +
-                    $"complete={candidate.IsComplete} missing='{candidate.MissingTargets}' " +
-                    $"fullPoseTransforms={candidate.FullPoseCount} " +
-                    $"rotationOnlyTransforms={candidate.RotationOnlyCount} " +
-                    $"plausibleAgainstVanillaRest={plausibility.Plausible} " +
-                    $"source='{source}'.");
+                if (seamLog)
+                {
+                    logger?.LogInfo(
+                        "[RestoreSeam.tprig] pristine_captured: " +
+                        $"frame={Time.frameCount} player='{playerDescription}' " +
+                        $"localPlayer={localPlayer} enabled=True baseline_contaminated=False " +
+                        $"complete={candidate.IsComplete} missing='{candidate.MissingTargets}' " +
+                        $"fullPoseTransforms={candidate.FullPoseCount} " +
+                        $"rotationOnlyTransforms={candidate.RotationOnlyCount} " +
+                        $"plausibleAgainstVanillaRest={plausibility.Plausible} " +
+                        $"source='{source}'.");
+                }
             }
             catch (Exception exception)
             {
-                logger?.LogInfo(
-                    "[RestoreSeam.tprig] pristine_capture_skipped: " +
-                    $"frame={Time.frameCount} player='{playerDescription}' " +
-                    $"localPlayer={localPlayer} enabled=True source='{source}' " +
-                    $"reason='capture_failed:{SanitizeLogValue(exception.Message)}' " +
-                    "action='use_equip_fallback'.");
+                if (seamLog)
+                {
+                    logger?.LogInfo(
+                        "[RestoreSeam.tprig] pristine_capture_skipped: " +
+                        $"frame={Time.frameCount} player='{playerDescription}' " +
+                        $"localPlayer={localPlayer} enabled=True source='{source}' " +
+                        $"reason='capture_failed:{SanitizeLogValue(exception.Message)}' " +
+                        "action='use_equip_fallback'.");
+                }
             }
         }
 
@@ -2708,13 +2738,16 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     rigArms,
                     ResolveTwoBoneIkConstraintType(),
                     ResolveChainIkConstraintType());
-                logger?.LogInfo(
-                    "[RigDiff] pristine_captured: " +
-                    $"frame={Time.frameCount} transforms={pristineRig.Transforms.Length} " +
-                    $"twoBoneIkConstraints={pristineRig.TwoBoneConstraints.Length} " +
-                    $"chainIkConstraints={pristineRig.ChainConstraints.Length} " +
-                    $"rigs={pristineRig.Rigs.Length} rigLayers={pristineRig.RigLayers.Length} " +
-                    $"metarig='{metarig.name}' rigArms='{rigArms.name}'.");
+                if (ReadRegressionHuntDiagnostic(enablePristineRigDiffProbe))
+                {
+                    logger?.LogInfo(
+                        "[RigDiff] pristine_captured: " +
+                        $"frame={Time.frameCount} transforms={pristineRig.Transforms.Length} " +
+                        $"twoBoneIkConstraints={pristineRig.TwoBoneConstraints.Length} " +
+                        $"chainIkConstraints={pristineRig.ChainConstraints.Length} " +
+                        $"rigs={pristineRig.Rigs.Length} rigLayers={pristineRig.RigLayers.Length} " +
+                        $"metarig='{metarig.name}' rigArms='{rigArms.name}'.");
+                }
             }
             catch (Exception exception)
             {

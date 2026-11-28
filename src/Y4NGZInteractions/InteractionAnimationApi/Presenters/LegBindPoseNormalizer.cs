@@ -135,12 +135,15 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     return true;
                 }
 
-                logger?.LogInfo(
-                    "[RestoreSeam.legbind] shin_bind_pose_normalized: " +
-                    $"frame={frame} " +
-                    $"player='{InteractionAnimationApiRestoreDiagnostics.DescribePlayer(entry.Player)}' " +
-                    $"phase='{entry.Phase}' scheduledFrame={entry.ScheduledFrame} " +
-                    $"drain='{drain}' restored={restored} source='{source}'.");
+                if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+                {
+                    logger?.LogInfo(
+                        "[RestoreSeam.legbind] shin_bind_pose_normalized: " +
+                        $"frame={frame} " +
+                        $"player='{InteractionAnimationApiRestoreDiagnostics.DescribePlayer(entry.Player)}' " +
+                        $"phase='{entry.Phase}' scheduledFrame={entry.ScheduledFrame} " +
+                        $"drain='{drain}' restored={restored} source='{source}'.");
+                }
                 return true;
             }
             catch (Exception exception)
@@ -162,6 +165,9 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             string source,
             string reason)
         {
+            if (!InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled)
+                return;
+
             logger?.LogInfo(
                 "[RestoreSeam.legbind] shin_bind_pose_skipped: " +
                 $"frame={frame} " +
