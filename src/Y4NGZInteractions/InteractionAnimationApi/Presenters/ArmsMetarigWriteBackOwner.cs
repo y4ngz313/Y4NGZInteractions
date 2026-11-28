@@ -119,7 +119,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 if (Time.realtimeSinceStartup >= nextCorrectionLogAllowedAtRealtime)
                 {
                     nextCorrectionLogAllowedAtRealtime = Time.realtimeSinceStartup + 1f;
-                    InteractionAnimationApiRestoreDiagnostics.StaticLogger?.LogInfo(
+                    InteractionAnimationApiRestoreDiagnostics.StaticLogger?.LogDebug(
                         "[RestoreSeam.armsmetarig] owner_corrected: " +
                         $"frame={Time.frameCount} state={state.shortNameHash} " +
                         $"inTransition={inTransition} nextState={nextStateHash} " +

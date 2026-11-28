@@ -84,7 +84,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             }
 
             PreloadingBundlePaths.Add(bundlePath);
-            logger?.LogInfo(
+            logger?.LogDebug(
                 "[LCInteractionAnimationAPI] viewmodel.bundle_preload_started: " +
                 $"path='{bundlePath}' fileBytes={new FileInfo(bundlePath).Length}.");
             Y4NGZInteractions.Plugin.Host.StartCoroutine(
@@ -171,7 +171,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             FireTriggerIfExists(manifest.localViewmodel.enterTrigger);
             viewmodelAnimator.Update(0f);
             EvaluateViewmodelRigBuilders();
-            context.Logger?.LogInfo(
+            context.Logger?.LogDebug(
                 "[LCInteractionAnimationAPI] local_viewmodel.started: " +
                 $"handle={context.Handle} interaction='{manifest.interactionId}' " +
                 $"prefab='{manifest.localViewmodel.prefabAssetName}' controller='{manifest.localViewmodel.controllerAssetName}' " +
@@ -196,7 +196,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             SetBoolIfExists(viewmodel.activeBool, false);
             FireTriggerIfExists(viewmodel.exitTrigger);
             float exitSeconds = Mathf.Max(0f, viewmodel.exitSeconds);
-            context.Logger?.LogInfo(
+            context.Logger?.LogDebug(
                 "[LCInteractionAnimationAPI] local_viewmodel.exit_started: " +
                 $"handle={context.Handle} exitSeconds={exitSeconds:0.###}.");
             return exitSeconds;
@@ -245,7 +245,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             RestoreLiveFirstPersonRenderers();
             DestroyViewmodel();
             ReleaseViewmodelBundle();
-            context?.Logger?.LogInfo(
+            context?.Logger?.LogDebug(
                 "[LCInteractionAnimationAPI] local_viewmodel.stopped: " +
                 $"handle={context.Handle} reason='{stopReason}' restoredRenderers={hiddenRenderers.Count}.");
             hiddenRenderers.Clear();
@@ -339,7 +339,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 }
             }
 
-            context?.Logger?.LogInfo(
+            context?.Logger?.LogDebug(
                 "[LCInteractionAnimationAPI] local_viewmodel.rig_rebuilt: " +
                 $"handle={context?.Handle} rigBuilders={rebuilt}.");
         }
@@ -441,7 +441,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             }
 
             ownsViewmodelBundle = true;
-            context.Logger?.LogInfo(
+            context.Logger?.LogDebug(
                 "[LCInteractionAnimationAPI] viewmodel.bundle_loaded: " +
                 $"handle={context.Handle} path='{bundlePath}'.");
             return true;
@@ -466,7 +466,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             }
 
             PreloadedBundles[bundlePath] = bundle;
-            logger?.LogInfo(
+            logger?.LogDebug(
                 "[LCInteractionAnimationAPI] viewmodel.bundle_preload_completed: " +
                 $"path='{bundlePath}' internalName='{bundle.name}' expectedInternalName='{bundleInternalName}'.");
         }
@@ -551,7 +551,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             EvaluateViewmodelRigBuilders();
 
             ApplyViewmodelRendererVisibility(manifest);
-            context.Logger?.LogInfo(
+            context.Logger?.LogDebug(
                 "[LCInteractionAnimationAPI] local_viewmodel.instantiated: " +
                 $"handle={context.Handle} prefab='{manifest.localViewmodel.prefabAssetName}' " +
                 $"controller='{manifest.localViewmodel.controllerAssetName}' camera='{cameraParent.name}'.");
@@ -604,7 +604,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             viewmodelRoot.transform.localPosition =
                 manifest.localViewmodel.cameraLocalPosition.ToUnityVector3() - anchorOffset;
 
-            context.Logger?.LogInfo(
+            context.Logger?.LogDebug(
                 "[LCInteractionAnimationAPI] local_viewmodel.anchor_aligned: " +
                 $"handle={context.Handle} anchorPath='{anchorPath}' path='{GetTransformPath(anchor)}' " +
                 $"anchorRootLocalPosition={FormatVector(anchorRootLocalPosition)} " +
@@ -637,7 +637,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 : Vector3.zero;
             bool rootLayerVisible = IsLayerInCullingMask(camera, viewmodelRoot.layer);
 
-            context.Logger.LogInfo(
+            context.Logger.LogDebug(
                 "[LCInteractionAnimationAPI] local_viewmodel.camera_diagnostics: " +
                 $"handle={context.Handle} camera='{SafeName(camera)}' " +
                 $"cameraEnabled={(camera != null && camera.enabled)} " +
@@ -702,7 +702,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             Plane[] frustumPlanes = camera != null
                 ? GeometryUtility.CalculateFrustumPlanes(camera)
                 : null;
-            context.Logger.LogInfo(
+            context.Logger.LogDebug(
                 "[LCInteractionAnimationAPI] " + eventName + "_summary: " +
                 $"handle={context.Handle} phase='{phase}' rendererCount={renderers.Length} camera='{SafeName(camera)}'.");
 
@@ -729,7 +729,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 SkinnedMeshRenderer skinnedRenderer = renderer as SkinnedMeshRenderer;
                 Material[] materials = GetSharedMaterials(renderer);
 
-                context.Logger.LogInfo(
+                context.Logger.LogDebug(
                     "[LCInteractionAnimationAPI] " + eventName + ": " +
                     $"handle={context.Handle} phase='{phase}' index={i} total={renderers.Length} " +
                     $"renderer='{GetTransformPath(renderer.transform)}' name='{renderer.name}' " +
@@ -755,7 +755,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             if (materials.Length == 0)
             {
-                context.Logger.LogInfo(
+                context.Logger.LogDebug(
                     "[LCInteractionAnimationAPI] local_viewmodel.renderer_material: " +
                     $"handle={context.Handle} rendererIndex={rendererIndex} materialIndex=-1 material='<none>'.");
                 return;
@@ -765,7 +765,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             {
                 Material material = materials[i];
                 Shader shader = material != null ? material.shader : null;
-                context.Logger.LogInfo(
+                context.Logger.LogDebug(
                     "[LCInteractionAnimationAPI] local_viewmodel.renderer_material: " +
                     $"handle={context.Handle} rendererIndex={rendererIndex} materialIndex={i} " +
                     $"renderer='{GetTransformPath(renderer.transform)}' material='{SafeName(material)}' " +
@@ -810,7 +810,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             hiddenRenderers.Add(RendererState.Capture(renderer));
             renderer.enabled = false;
-            context.Logger?.LogInfo(
+            context.Logger?.LogDebug(
                 "[LCInteractionAnimationAPI] local_viewmodel.renderer_hidden: " +
                 $"handle={context.Handle} renderer='{renderer.name}'.");
         }

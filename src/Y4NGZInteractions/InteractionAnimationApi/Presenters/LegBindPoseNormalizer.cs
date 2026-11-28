@@ -135,7 +135,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     return true;
                 }
 
-                logger?.LogInfo(
+                logger?.LogDebug(
                     "[RestoreSeam.legbind] shin_bind_pose_normalized: " +
                     $"frame={frame} " +
                     $"player='{InteractionAnimationApiRestoreDiagnostics.DescribePlayer(entry.Player)}' " +
@@ -162,7 +162,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             string source,
             string reason)
         {
-            logger?.LogInfo(
+            logger?.LogDebug(
                 "[RestoreSeam.legbind] shin_bind_pose_skipped: " +
                 $"frame={frame} " +
                 $"player='{InteractionAnimationApiRestoreDiagnostics.DescribePlayer(entry.Player)}' " +

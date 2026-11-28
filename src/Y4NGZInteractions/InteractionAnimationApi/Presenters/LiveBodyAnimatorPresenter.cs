@@ -315,7 +315,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 return false;
             }
 
-            logger?.LogInfo(
+            logger?.LogDebug(
                 "[LCInteractionAnimationAPI] live_body.preloaded: " +
                 $"interaction='{manifest.interactionId}' controller='{controller.name}'.");
             return true;
@@ -559,7 +559,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     $"rigEvaluateMs={rigEvaluateMs:0.###} diagnosticsMs={diagnosticsMs:0.###} " +
                     $"propInstantiateMs={propInstantiateMs:0.###} finalizeMs={finalizeMs:0.###}.");
             }
-            context.Logger?.LogInfo(
+            context.Logger?.LogDebug(
                 "[LCInteractionAnimationAPI] live_body.started: " +
                 $"handle={context.Handle} interaction='{manifest.interactionId}' " +
                 $"controller='{appliedController.name}' animator='{bodyAnimator.name}' " +
@@ -650,7 +650,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                         if (!specialAnimationAutoStopExemptLogged)
                         {
                             specialAnimationAutoStopExemptLogged = true;
-                            context?.Logger?.LogInfo(
+                            context?.Logger?.LogDebug(
                                 "[LCInteractionAnimationAPI] live_body.auto_stop_exempt: " +
                                 $"handle={context.Handle} interaction='{interactionId}' " +
                                 $"specialAnim={player.inSpecialInteractAnimation} " +
@@ -662,7 +662,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     requestedStopReason = player.isPlayerDead
                         ? InteractionAnimationStopReason.PlayerDied
                         : InteractionAnimationStopReason.Interrupted;
-                    context?.Logger?.LogInfo(
+                    context?.Logger?.LogDebug(
                         "[LCInteractionAnimationAPI] live_body.auto_stop_requested: " +
                         $"handle={context.Handle} specialAnim={player.inSpecialInteractAnimation} " +
                         $"dead={player.isPlayerDead} ladder={player.isClimbingLadder}.");
@@ -697,7 +697,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 ResetCameraDisplacementGuardState();
             if (LocalCameraOwnedExternally)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[LCInteractionAnimationAPI] live_body.camera_displacement_guard.baseline_unavailable: " +
                     $"handle={context.Handle} interaction='{context.Manifest?.interactionId ?? "<none>"}' " +
                     "reason='local_camera_owned_externally' " +
@@ -710,7 +710,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             if (player == null || player.transform == null || !localPlayer ||
                 player.gameplayCamera == null)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[LCInteractionAnimationAPI] live_body.camera_displacement_guard.baseline_unavailable: " +
                     $"handle={context.Handle} interaction='{context.Manifest?.interactionId ?? "<none>"}' " +
                     $"playerPresent={player != null} playerTransformPresent={player?.transform != null} " +
@@ -743,7 +743,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     if (!cameraBaselineDeferralLogged)
                     {
                         cameraBaselineDeferralLogged = true;
-                        context?.Logger?.LogInfo(
+                        context?.Logger?.LogDebug(
                             "[LCInteractionAnimationAPI] live_body.camera_displacement_guard.baseline_deferred: " +
                             $"handle={context.Handle} interaction='{context.Manifest?.interactionId ?? "<none>"}' " +
                             $"candidate_baseline={DescribeVector(candidateBaseline)} " +
@@ -797,7 +797,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             bool baselineCrouching = false;
             try { baselineCrouching = player.isCrouching; } catch { }
 
-            context?.Logger?.LogInfo(
+            context?.Logger?.LogDebug(
                 "[LCInteractionAnimationAPI] live_body.camera_displacement_guard.baseline_captured: " +
                 $"handle={context.Handle} interaction='{context.Manifest?.interactionId ?? "<none>"}' " +
                 $"baseline={DescribeVector(cameraPlayerLocalPositionAtStart)} " +
@@ -886,7 +886,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
                 if (displacement > CameraDisplacementGuardThreshold)
                 {
-                    context?.Logger?.LogInfo(
+                    context?.Logger?.LogDebug(
                         "[RestoreSeam.camerachain] heal_skipped: " +
                         $"frame={Time.frameCount} handle={context.Handle} " +
                         $"displacement={displacement:0.###} " +
@@ -906,7 +906,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 catch { }
                 if (crouching || specialAnimation)
                 {
-                    context?.Logger?.LogInfo(
+                    context?.Logger?.LogDebug(
                         "[RestoreSeam.camerachain] heal_skipped: " +
                         $"frame={Time.frameCount} handle={context.Handle} " +
                         $"displacement={displacement:0.###} crouching={crouching} " +
@@ -922,7 +922,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                             out string reason,
                             out string baselineSource))
                 {
-                    context?.Logger?.LogInfo(
+                    context?.Logger?.LogDebug(
                         "[RestoreSeam.camerachain] heal_skipped: " +
                         $"frame={Time.frameCount} handle={context.Handle} " +
                         $"displacement={displacement:0.###} " +
@@ -935,7 +935,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 float healedDisplacement = Vector3.Distance(
                     healedPlayerLocal,
                     VanillaCameraPlayerLocalRestExpectation);
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.camerachain] heal_applied: " +
                     $"frame={Time.frameCount} handle={context.Handle} " +
                     $"interaction='{context.Manifest?.interactionId ?? "<none>"}' " +
@@ -982,7 +982,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             {
                 if (!string.Equals(reason, "already_refined", StringComparison.Ordinal))
                 {
-                    context?.Logger?.LogInfo(
+                    context?.Logger?.LogDebug(
                         "[RestoreSeam.camerachain] rest_baseline_refine_skipped: " +
                         $"frame={Time.frameCount} handle={context.Handle} " +
                         $"displacement={displacement:0.###} reason='{reason}' " +
@@ -991,7 +991,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 return;
             }
 
-            context?.Logger?.LogInfo(
+            context?.Logger?.LogDebug(
                 "[RestoreSeam.camerachain] rest_baseline_refine_accepted: " +
                 $"frame={Time.frameCount} handle={context.Handle} " +
                 $"interaction='{context.Manifest?.interactionId ?? "<none>"}' " +
@@ -1163,7 +1163,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     crouchingAtCapture,
                     VanillaCameraCrouchedPlayerLocalRestHeight,
                     VanillaCameraPlayerLocalRestExpectation.y);
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[LCInteractionAnimationAPI] live_body.local_camera_stabilizer_started: " +
                     $"handle={context.Handle} playerLocalPosition={cameraPlayerLocalPositionAtStart} " +
                     $"mode='{(crouchingKnown ? "session_stance_relative_pin" : "session_position_pin")}' " +
@@ -1191,7 +1191,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             cameraRotationStabilizer = null;
             if (LocalCameraOwnedExternally)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[LCInteractionAnimationAPI] live_body.camera_rotation_stabilizer_skipped: " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
                     "enabled=True reason='local_camera_owned_externally' " +
@@ -1201,7 +1201,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             if (!PreserveGameplayCamera)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[LCInteractionAnimationAPI] live_body.camera_rotation_stabilizer_skipped: " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
                     "enabled=False reason='manifest_preservation_disabled' " +
@@ -1212,7 +1212,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             if (!InteractionAnimationApiRestoreDiagnostics
                     .StabilizeCameraRotationDuringSessionEnabled)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[LCInteractionAnimationAPI] live_body.camera_rotation_stabilizer_skipped: " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
                     "enabled=False reason='kill_switch_disabled' action='leave_rotation_unpinned'.");
@@ -1221,7 +1221,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             if (!hasGameplayCameraLocalRotationBaseline)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[LCInteractionAnimationAPI] live_body.camera_rotation_stabilizer_skipped: " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
                     "enabled=True reason='session_entry_rotation_unavailable' " +
@@ -1236,7 +1236,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     : null;
             if (gameplayCameraTransform == null)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[LCInteractionAnimationAPI] live_body.camera_rotation_stabilizer_skipped: " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
                     "enabled=True reason='gameplay_camera_missing' " +
@@ -1259,7 +1259,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     gameplayCameraTransform,
                     gameplayCameraLocalYawAtStart,
                     gameplayCameraLocalRollAtStart);
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[LCInteractionAnimationAPI] live_body.camera_rotation_stabilizer_started: " +
                     $"handle={context.Handle} enabled=True " +
                     $"sessionEntryLocalYaw={gameplayCameraLocalYawAtStart:0.######} " +
@@ -1269,7 +1269,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             catch (Exception exception)
             {
                 cameraRotationStabilizer = null;
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[LCInteractionAnimationAPI] live_body.camera_rotation_stabilizer_skipped: " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
                     $"enabled=True reason='start_failed:{exception.Message}' " +
@@ -1290,14 +1290,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     stabilizer.ApplyNow();
                 stabilizer.enabled = false;
                 UnityEngine.Object.Destroy(stabilizer);
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[LCInteractionAnimationAPI] live_body.camera_rotation_stabilizer_stopped: " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
                     $"restoredSessionEntryRotation={restoreSessionEntryRotation}.");
             }
             catch (Exception exception)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[LCInteractionAnimationAPI] live_body.camera_rotation_stabilizer_stop_failed: " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
                     $"error='{exception.Message}'.");
@@ -1314,7 +1314,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             if (LocalCameraOwnedExternally)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.camerapin] pin_skipped: " +
                     $"frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -1363,7 +1363,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 // permanent -1.18 camera-local offset. Hold the container instead.
                 cameraPositionStabilizer.HoldAtContainerLevel(
                     SafeCameraContainerTransform(player));
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.pin] pin_started: " +
                     $"frame={Time.frameCount} handle={context.Handle} " +
                     $"playerLocalPosition={stopEntryPlayerLocalPosition} " +
@@ -1439,7 +1439,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             try
             {
                 string cameraLocalRestore = RestorePristineGameplayCameraLocalPosition(player);
-                SeamLogger?.LogInfo(
+                SeamLogger?.LogDebug(
                     "[RestoreSeam.pin] pin_released: " +
                     $"frame={Time.frameCount} handle={SeamHandle} " +
                     $"mode='{mode}' cameraLocalRestore='{cameraLocalRestore}'.");
@@ -1510,7 +1510,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         {
             if (LocalCameraOwnedExternally || !PreserveGameplayCamera)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.camerarotation] capture_skipped: " +
                     $"phase='{phase}' frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -1524,7 +1524,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             if (!InteractionAnimationApiRestoreDiagnostics.RestoreCameraRotationEnabled &&
                 !stopSnapToRest)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.camerarotation] capture_skipped: " +
                     $"phase='{phase}' frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -1535,7 +1535,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             GameNetcodeStuff.PlayerControllerB player = context?.Request?.Player;
             if (player == null)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.camerarotation] capture_skipped: " +
                     $"phase='{phase}' frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -1545,7 +1545,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             if (!IsLocalPlayer(player))
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.camerarotation] capture_skipped: " +
                     $"phase='{phase}' frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -1612,14 +1612,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             if (!gameplayCameraCaptured && !cameraContainerCaptured)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.camerarotation] capture_skipped: " +
                     $"phase='{phase}' frame={Time.frameCount} handle={context.Handle} " +
                     "reason='no_rotation_targets'.");
                 return default;
             }
 
-            context?.Logger?.LogInfo(
+            context?.Logger?.LogDebug(
                 "[RestoreSeam.camerarotation] captured: " +
                 $"phase='{phase}' frame={Time.frameCount} handle={context.Handle} " +
                 $"gameplayCameraLocalEuler={DescribeCapturedEuler(gameplayCameraCaptured, gameplayCameraLocalRotation)} " +
@@ -1640,7 +1640,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         {
             if (LocalCameraOwnedExternally || !PreserveGameplayCamera)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.camerarotation] reapply_skipped: " +
                     $"phase='{phase}' frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -1654,7 +1654,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 InteractionAnimationApiRestoreDiagnostics.RestoreCameraRotationSnapToRestEnabled;
             if (!animatorRestored)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.camerarotation] reapply_skipped: " +
                     $"phase='{phase}' frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -1665,7 +1665,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             if (!InteractionAnimationApiRestoreDiagnostics.RestoreCameraRotationEnabled &&
                 !stopSnapToRest)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.camerarotation] reapply_skipped: " +
                     $"phase='{phase}' frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -1675,7 +1675,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             if (!captured.HasAnyRotation)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.camerarotation] reapply_skipped: " +
                     $"phase='{phase}' frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -1707,7 +1707,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             if (stopPhase)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.camerarotation] stop_restore_gate: " +
                     $"phase='stop' frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -1799,7 +1799,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 return;
             }
 
-            context?.Logger?.LogInfo(
+            context?.Logger?.LogDebug(
                 "[RestoreSeam.camerarotation] reapplied: " +
                 $"phase='{phase}' frame={Time.frameCount} handle={context.Handle} " +
                 $"snapToRest={stopSnapToRest} " +
@@ -1811,7 +1811,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         {
             if (LocalCameraOwnedExternally)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.visor] capture_skipped: " +
                     $"phase='{phase}' frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -1821,7 +1821,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             if (!InteractionAnimationApiRestoreDiagnostics.RestoreVisorPoseEnabled)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.visor] capture_skipped: " +
                     $"phase='{phase}' frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -1842,7 +1842,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             if (!IsLocalPlayer(player))
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.visor] capture_skipped: " +
                     $"phase='{phase}' frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -1919,14 +1919,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             if (!captured.HasAnyRestoreEligiblePose)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.visor] capture_skipped: " +
                     $"phase='{phase}' frame={Time.frameCount} handle={context.Handle} " +
                     "reason='no_targets_under_animator_hierarchy'.");
                 return default;
             }
 
-            context?.Logger?.LogInfo(
+            context?.Logger?.LogDebug(
                 "[RestoreSeam.visor] captured: " +
                 $"phase='{phase}' frame={Time.frameCount} handle={context.Handle} " +
                 $"localVisor={DescribeCapturedSeamPose(captured.LocalVisor)} " +
@@ -1976,7 +1976,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
         {
             if (LocalCameraOwnedExternally)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.visor] reapply_skipped: " +
                     $"phase='{phase}' frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -1986,7 +1986,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             if (!animatorRestored)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.visor] reapply_skipped: " +
                     $"phase='{phase}' frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -1996,7 +1996,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             if (!InteractionAnimationApiRestoreDiagnostics.RestoreVisorPoseEnabled)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.visor] reapply_skipped: " +
                     $"phase='{phase}' frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -2066,7 +2066,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 return;
             }
 
-            context?.Logger?.LogInfo(
+            context?.Logger?.LogDebug(
                 "[RestoreSeam.visor] reapplied: " +
                 $"phase='{phase}' frame={Time.frameCount} handle={context.Handle} " +
                 $"localVisorApplied={localVisorApplied} " +
@@ -2094,7 +2094,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             if (!captured.UnderAnimatorHierarchy)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.visor] reapply_skipped: " +
                     $"phase='{phase}' frame={Time.frameCount} handle={context.Handle} " +
                     $"target='{targetName}' reason='not_under_animator_hierarchy'.");
@@ -2145,7 +2145,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             visorHierarchyLogged = true;
             try
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.visor] hierarchy: " +
                     $"phase='{phase}' frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -2346,7 +2346,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 if (!consumerOwnedCameraLogged)
                 {
                     consumerOwnedCameraLogged = true;
-                    context?.Logger?.LogInfo(
+                    context?.Logger?.LogDebug(
                         "[LCInteractionAnimationAPI] live_body.camera_displacement_guard.guard_exempt: " +
                         BuildMeasurements() + " action='continue_exempt'.");
                 }
@@ -2407,7 +2407,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 if (!cameraGuardVanillaRestEnvelopeSuppressionLogged)
                 {
                     cameraGuardVanillaRestEnvelopeSuppressionLogged = true;
-                    context?.Logger?.LogInfo(
+                    context?.Logger?.LogDebug(
                         "[LCInteractionAnimationAPI] live_body.camera_displacement_guard.continue: " +
                         BuildMeasurements() + " " + envelopeMeasurements +
                         " action='continue_within_stance_rest_envelope'.");
@@ -2495,7 +2495,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 if (!stanceViewpointGuardExemptLogged)
                 {
                     stanceViewpointGuardExemptLogged = true;
-                    context?.Logger?.LogInfo(
+                    context?.Logger?.LogDebug(
                         "[LCInteractionAnimationAPI] live_body.camera_displacement_guard.stance_mismatch_exempt: " +
                         measurements + " action='continue_exempt'.");
                 }
@@ -2528,7 +2528,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             // that residue permanent (accumulating viewpoint drift across sessions).
             scopedFirstPersonPoseSnapshot = TransformPoseSnapshot.CaptureSubtree(
                 player.playerModelArmsMetarig);
-            context?.Logger?.LogInfo(
+            context?.Logger?.LogDebug(
                 "[LCInteractionAnimationAPI] live_body.scoped_fp_pose_captured: " +
                 $"handle={context.Handle} transforms={scopedFirstPersonPoseSnapshot.Count} " +
                 "includesMetarigRoot=True.");
@@ -2549,7 +2549,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 animatorRoot,
                 gameplayCamera,
                 out Transform excludedCameraBranch);
-            context?.Logger?.LogInfo(
+            context?.Logger?.LogDebug(
                 "[LCInteractionAnimationAPI] live_body.scoped_tp_pose_captured: " +
                 $"handle={context.Handle} transforms={scopedThirdPersonPoseSnapshot.Count} " +
                 $"cameraBranchExcluded='{(excludedCameraBranch != null ? excludedCameraBranch.name : "<none>")}'.");
@@ -2573,7 +2573,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     return;
 
                 rigControlPoseSnapshot = TransformPoseSnapshot.CaptureSubtree(rigControlRoot);
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.rigpose] captured: " +
                     $"handle={context.Handle} transforms={rigControlPoseSnapshot.Count}.");
             }
@@ -2619,7 +2619,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             int equipFallbackRestored = rigControlPoseSnapshot != null
                 ? rigControlPoseSnapshot.RestoreExcept(pristineRestoredTransforms)
                 : 0;
-            context?.Logger?.LogInfo(
+            context?.Logger?.LogDebug(
                 "[RestoreSeam.rigpose] restored: " +
                 $"handle={context.Handle} pristineBaselineUsed={pristineBaselineUsed} " +
                 $"pristineRestored={pristineRestored} " +
@@ -2634,7 +2634,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             bool localPlayer = IsLocalPlayer(player);
             if (!InteractionAnimationApiRestoreDiagnostics.RestoreThirdPersonRigControlPoseEnabled)
             {
-                RestoreLogger?.LogInfo(
+                RestoreLogger?.LogDebug(
                     "[RestoreSeam.tprig] capture_skipped: " +
                     $"frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -2645,7 +2645,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             if (player == null || player.playerBodyAnimator == null)
             {
-                RestoreLogger?.LogInfo(
+                RestoreLogger?.LogDebug(
                     "[RestoreSeam.tprig] capture_skipped: " +
                     $"frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -2664,7 +2664,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     thirdPersonRigControlPoseSnapshot.TotalCount == 0)
                 {
                     thirdPersonRigControlPoseSnapshot = null;
-                    RestoreLogger?.LogInfo(
+                    RestoreLogger?.LogDebug(
                         "[RestoreSeam.tprig] capture_skipped: " +
                         $"frame={Time.frameCount} handle={context.Handle} " +
                         $"localPlayer={localPlayer} enabled=True " +
@@ -2672,7 +2672,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     return;
                 }
 
-                RestoreLogger?.LogInfo(
+                RestoreLogger?.LogDebug(
                     "[RestoreSeam.tprig] captured: " +
                     $"frame={Time.frameCount} handle={context.Handle} " +
                     $"localPlayer={localPlayer} enabled=True " +
@@ -2685,7 +2685,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             catch (Exception exception)
             {
                 thirdPersonRigControlPoseSnapshot = null;
-                RestoreLogger?.LogInfo(
+                RestoreLogger?.LogDebug(
                     "[RestoreSeam.tprig] capture_skipped: " +
                     $"frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -2700,7 +2700,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             bool localPlayer = IsLocalPlayer(player);
             if (!InteractionAnimationApiRestoreDiagnostics.RestoreThirdPersonRigControlPoseEnabled)
             {
-                RestoreLogger?.LogInfo(
+                RestoreLogger?.LogDebug(
                     "[RestoreSeam.tprig] restore_skipped: " +
                     $"frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -2711,7 +2711,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             if (!animatorRestored)
             {
-                RestoreLogger?.LogInfo(
+                RestoreLogger?.LogDebug(
                     "[RestoreSeam.tprig] restore_skipped: " +
                     $"frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -2722,7 +2722,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             if (thirdPersonRigControlPoseSnapshot == null)
             {
-                RestoreLogger?.LogInfo(
+                RestoreLogger?.LogDebug(
                     "[RestoreSeam.tprig] restore_skipped: " +
                     $"frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -2755,7 +2755,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 pristineGateReason = "dispatch_failed:" + exception.Message;
             }
 
-            RestoreLogger?.LogInfo(
+            RestoreLogger?.LogDebug(
                 "[RestoreSeam.tprig] pristine_restore_gate: " +
                 $"frame={Time.frameCount} handle={context.Handle} " +
                 $"localPlayer={localPlayer} " +
@@ -2776,14 +2776,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             }
             catch (Exception exception)
             {
-                RestoreLogger?.LogInfo(
+                RestoreLogger?.LogDebug(
                     "[RestoreSeam.tprig] restore_failed: " +
                     $"frame={Time.frameCount} handle={context.Handle} " +
                     $"localPlayer={localPlayer} enabled=True " +
                     $"reason='equip_fallback_failed:{exception.Message}' action='continue_teardown'.");
                 return;
             }
-            RestoreLogger?.LogInfo(
+            RestoreLogger?.LogDebug(
                 "[RestoreSeam.tprig] restored: " +
                 $"frame={Time.frameCount} handle={context.Handle} " +
                 $"localPlayer={localPlayer} enabled=True " +
@@ -2874,7 +2874,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             string horizontalSource = horizontalTarget.UsedSessionEntry
                 ? "session_entry"
                 : "vanilla_rest_fallback";
-            context?.Logger?.LogInfo(
+            context?.Logger?.LogDebug(
                 "[RestoreSeam.camerachain] stance_rest_snap_applied: " +
                 $"frame={Time.frameCount} " +
                 $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -3028,13 +3028,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     return;
                 }
 
-                SeamLogger?.LogInfo(
+                SeamLogger?.LogDebug(
                     "[RestoreSeam.camerachain] teardown_residue_check: " +
                     measurements + " result='pristine' action='none'.");
             }
             catch (Exception exception)
             {
-                SeamLogger?.LogInfo(
+                SeamLogger?.LogDebug(
                     "[RestoreSeam.camerachain] teardown_residue_check: " +
                     $"frame={Time.frameCount} phase='{phase}' " +
                     $"error='{exception.Message}' result='unavailable' action='none'.");
@@ -3147,7 +3147,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             }
             catch (Exception exception)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.bindpose] bind_pose_normalization_skipped: " +
                     $"frame={Time.frameCount} target='{targetName}' " +
                     $"reason='{exception.Message}'.");
@@ -3163,7 +3163,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             if (!InteractionAnimationApiRestoreDiagnostics
                     .RestoreCameraChainPositionSnapToRestEnabled)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.camerachain] snap_skipped: " +
                     $"frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -3177,7 +3177,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             if (LocalCameraOwnedExternally)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.camerachain] snap_skipped: " +
                     $"frame={Time.frameCount} handle={context.Handle} " +
                     "reason='local_camera_owned_externally' action='leave_camera_chain'.");
@@ -3207,7 +3207,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 bool crouchRestHeal = crouching && !specialAnimation;
                 if (specialAnimation && !guardStop)
                 {
-                    context?.Logger?.LogInfo(
+                    context?.Logger?.LogDebug(
                         "[RestoreSeam.camerachain] snap_skipped: " +
                         $"frame={Time.frameCount} handle={context.Handle} " +
                         $"crouching={crouching} specialAnimation={specialAnimation} " +
@@ -3244,7 +3244,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     // deferred LateUpdates would restore the rejected height.
                     if (guardStop)
                         cameraPositionStabilizer?.RetargetToCurrentPosition();
-                    context?.Logger?.LogInfo(
+                    context?.Logger?.LogDebug(
                         "[RestoreSeam.camerachain] snap_skipped: " +
                         $"frame={Time.frameCount} handle={context.Handle} " +
                         $"reason='{reason}' guardStop={guardStop} action='leave_camera_chain'.");
@@ -3292,7 +3292,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     }
                     else
                     {
-                        context?.Logger?.LogInfo(
+                        context?.Logger?.LogDebug(
                             "[RestoreSeam.camerachain] stance_rest_snap_skipped: " +
                             $"frame={Time.frameCount} handle={context.Handle} " +
                             $"phase='post_pristine' stopReason='{stopReason}' " +
@@ -3316,7 +3316,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     cameraPositionStabilizer.RetargetToCurrentPosition();
                     stabilizerRetargeted = true;
                 }
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.camerachain] snap_applied: " +
                     $"frame={Time.frameCount} handle={context.Handle} " +
                     $"restoredTransforms={restored} " +
@@ -3380,7 +3380,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 string branch = inSpecialInteractAnimation
                     ? "specialanim"
                     : localArmsMatchCamera ? "lateupdate" : "update";
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[RestoreSeam.armsglue] gates: " +
                     $"frame={Time.frameCount} handle={context.Handle} " +
                     $"inSpecialInteractAnimation={inSpecialInteractAnimation} " +
@@ -3493,7 +3493,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 return;
 
             int restored = scopedFirstPersonPoseSnapshot.Restore();
-            context?.Logger?.LogInfo(
+            context?.Logger?.LogDebug(
                 "[LCInteractionAnimationAPI] live_body.scoped_fp_pose_restored: " +
                 $"handle={context.Handle} restored={restored} " +
                 $"captured={scopedFirstPersonPoseSnapshot.Count}.");
@@ -3505,7 +3505,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 return;
 
             int restored = scopedThirdPersonPoseSnapshot.Restore();
-            context?.Logger?.LogInfo(
+            context?.Logger?.LogDebug(
                 "[LCInteractionAnimationAPI] live_body.scoped_tp_pose_restored: " +
                 $"handle={context.Handle} restored={restored} " +
                 $"captured={scopedThirdPersonPoseSnapshot.Count}.");
@@ -3565,7 +3565,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             exitElapsedSeconds = 0f;
             exitDurationSeconds = exitSeconds;
             layerWeights?.BeginExit();
-            context?.Logger?.LogInfo(
+            context?.Logger?.LogDebug(
                 "[LCInteractionAnimationAPI] live_body.exit_begun: " +
                 $"frame={Time.frameCount} handle={context.Handle} " +
                 $"exitSeconds={exitSeconds:0.###} propAttached={propInstance != null}.");
@@ -4187,7 +4187,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             }
             catch (Exception exception)
             {
-                SeamLogger?.LogInfo(
+                SeamLogger?.LogDebug(
                     "[RestoreSeam.armsmetarig] stance_enforcement_skipped: " +
                     $"frame={Time.frameCount} reason='{exception.Message}'.");
             }
@@ -4203,7 +4203,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             if (!armsMetarigEnforcementEngaged)
                 return;
             armsMetarigEnforcementEngaged = false;
-            SeamLogger?.LogInfo(
+            SeamLogger?.LogDebug(
                 "[RestoreSeam.armsmetarig] stance_enforcement_released: " +
                 $"frame={Time.frameCount} handle={SeamHandle} " +
                 $"framesEnforced={armsMetarigEnforcementFrames} " +
@@ -4274,7 +4274,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             float animatorSpeed = bodyAnimator != null ? bodyAnimator.speed : 0f;
             float expectedSpeedFactor = animatorSpeed * stateInfo.speed * stateInfo.speedMultiplier;
-            context?.Logger?.LogInfo(
+            context?.Logger?.LogDebug(
                 "[LCInteractionAnimationAPI] live_body.playback_rate_segment_started: " +
                 $"handle={context.Handle} interaction='{context.Manifest?.interactionId ?? "<none>"}' " +
                 $"movement=2 layer={layerIndex} fullPathHash={stateInfo.fullPathHash} " +
@@ -4339,7 +4339,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 playbackRateClipSeconds += measurement.ClipSecondsAdvanced;
                 playbackRateCompletedCycles += measurement.CompletedCycles;
 
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[LCInteractionAnimationAPI] live_body.playback_rate_sample: " +
                     $"handle={context.Handle} interaction='{context.Manifest?.interactionId ?? "<none>"}' " +
                     $"movement=2 sampleKind='{(force ? "final" : "interval")}' " +
@@ -4380,7 +4380,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             {
                 double effectiveClipSecondsPerWallSecond =
                     playbackRateClipSeconds / playbackRateMeasuredWallSeconds;
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[LCInteractionAnimationAPI] live_body.playback_rate_summary: " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
                     $"interaction='{context?.Manifest?.interactionId ?? "<none>"}' movement=2 " +
@@ -4552,7 +4552,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     $"animatorUpdateMs={animatorUpdateMs:0.###} rigEvaluateMs={rigEvaluateMs:0.###} " +
                     $"cleanupMs={cleanupMs:0.###}.");
             }
-            context?.Logger?.LogInfo(
+            context?.Logger?.LogDebug(
                 "[LCInteractionAnimationAPI] live_body.restored: " +
                 $"handle={(context != null ? context.Handle.ToString() : "<none>")} reason='{stopReason}' " +
                 $"controllerRestore='{restoreResult}'.");
@@ -4657,7 +4657,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             SetLayerRecursive(propInstance, attachBone.gameObject.layer);
             propReleased = false;
 
-            context?.Logger?.LogInfo(
+            context?.Logger?.LogDebug(
                 "[LCInteractionAnimationAPI] live_body.prop_attached: " +
                 $"handle={context.Handle} prefab='{prop.prefabAssetName}' bone='{prop.attachBonePath}' " +
                 $"localPos=({prop.localPosition.x:0.###},{prop.localPosition.y:0.###},{prop.localPosition.z:0.###}) " +
@@ -4727,7 +4727,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 return;
             }
 
-            context?.Logger?.LogInfo(
+            context?.Logger?.LogDebug(
                 "[LCInteractionAnimationAPI] live_body.prop_body_copy_attached: " +
                 $"handle={context.Handle} instance='{bodyCopy.name}' bone='{bodyBone.name}'.");
         }
@@ -4743,7 +4743,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             propReleased = true;
             DestroyProp("release");
-            context?.Logger?.LogInfo(
+            context?.Logger?.LogDebug(
                 "[LCInteractionAnimationAPI] live_body.prop_released: " +
                 $"handle={context.Handle} elapsed={elapsedSeconds:0.###} releaseSeconds={prop.releaseSeconds:0.###}.");
         }
@@ -4754,7 +4754,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             // Unity-null (scene teardown) while the copy and its camera hook still exist.
             if (propBodyCopy.Destroy())
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[LCInteractionAnimationAPI] live_body.prop_body_copy_destroyed: " +
                     $"frame={Time.frameCount} " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -4766,7 +4766,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             try { UnityEngine.Object.Destroy(propInstance); } catch { }
             propInstance = null;
-            context?.Logger?.LogInfo(
+            context?.Logger?.LogDebug(
                 "[LCInteractionAnimationAPI] live_body.prop_destroyed: " +
                 $"frame={Time.frameCount} " +
                 $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
@@ -4834,7 +4834,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             }
 
             ownsBundle = true;
-            context.Logger?.LogInfo(
+            context.Logger?.LogDebug(
                 "[LCInteractionAnimationAPI] live_body.bundle_loaded: " +
                 $"handle={context.Handle} path='{bundlePath}' internalName='{bundle.name}'.");
             return true;
@@ -4974,7 +4974,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     $"{DescribeLandedBaseLayerState()} action='{entryAction}'.");
             }
 
-            context.Logger?.LogInfo(
+            context.Logger?.LogDebug(
                 "[LCInteractionAnimationAPI] live_body.controllerAssetName_applied: " +
                 $"handle={context.Handle} controller='{controller.name}' " +
                 $"previousController='{snapshot.RuntimeAnimatorController?.name ?? "<null>"}' " +
@@ -5070,7 +5070,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
                 overrideController[entry.slot] = packClip;
                 applied++;
-                context.Logger?.LogInfo(
+                context.Logger?.LogDebug(
                     "[LCInteractionAnimationAPI] live_body.clip_pack_slot_overridden: " +
                     $"handle={context.Handle} slot='{entry.slot}' clip='{packClip.name}' clipLength={packClip.length:0.###}.");
             }
@@ -5082,7 +5082,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             }
 
             controllerToApply = overrideController;
-            context.Logger?.LogInfo(
+            context.Logger?.LogDebug(
                 "[LCInteractionAnimationAPI] live_body.clip_pack_applied: " +
                 $"handle={context.Handle} bundle='{pack.bundleFileName}' overriddenSlots={applied}.");
             return true;
@@ -5438,7 +5438,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             if (suppressedRigBuilders.Count > 0)
             {
-                context.Logger?.LogInfo(
+                context.Logger?.LogDebug(
                     "[LCInteractionAnimationAPI] live_body.rig_suppressed: " +
                     $"handle={context.Handle} rigBuilders={suppressedRigBuilders.Count}.");
             }
@@ -5492,7 +5492,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 }
             }
 
-            context?.Logger?.LogInfo(
+            context?.Logger?.LogDebug(
                 "[LCInteractionAnimationAPI] live_body.rig_rebuilt: " +
                 $"handle={(context != null ? context.Handle.ToString() : "<none>")} phase='{phase}' rigBuilders={rebuilt}.");
 
@@ -5555,7 +5555,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 }
             }
 
-            context?.Logger?.LogInfo(
+            context?.Logger?.LogDebug(
                 "[RestoreSeam.rigeval] evaluated: " +
                 $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
                 $"phase='{phase}' rigBuilders={evaluated}.");
@@ -6676,7 +6676,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             StopLocalVisorHardGlue();
             if (LocalCameraOwnedExternally)
             {
-                context?.Logger?.LogInfo(
+                context?.Logger?.LogDebug(
                     "[LCInteractionAnimationAPI] live_body.visor_glue_skipped: " +
                     $"handle={(context != null ? context.Handle.ToString() : "<none>")} " +
                     $"interaction='{context?.Manifest?.interactionId ?? "<none>"}' " +
@@ -6747,7 +6747,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                     if (!visorHardGlueParkedLogged)
                     {
                         visorHardGlueParkedLogged = true;
-                        context?.Logger?.LogInfo(
+                        context?.Logger?.LogDebug(
                             "[LCInteractionAnimationAPI] live_body.visor_glue_parked: " +
                             $"handle={context.Handle} positionDelta={positionDelta:0.##}m " +
                             "action='skip_while_parked'.");
@@ -6758,7 +6758,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 if (!visorHardGlueAppliedLogged)
                 {
                     visorHardGlueAppliedLogged = true;
-                    context?.Logger?.LogInfo(
+                    context?.Logger?.LogDebug(
                         "[LCInteractionAnimationAPI] live_body.visor_glue_active: " +
                         $"handle={context.Handle} preGluePositionDelta={positionDelta:0.####}m " +
                         $"preGlueRotationDelta={Quaternion.Angle(visorHardGlueVisor.rotation, visorHardGlueTarget.rotation):0.##}deg.");

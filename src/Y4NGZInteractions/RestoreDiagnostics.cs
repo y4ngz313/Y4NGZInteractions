@@ -532,7 +532,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 if (!prepareForLiveBodyStartUninitializedLogged)
                 {
                     prepareForLiveBodyStartUninitializedLogged = true;
-                    StaticLogger?.LogInfo(
+                    StaticLogger?.LogDebug(
                         "[RestoreSeam.tprig] pristine_capture_skipped: " +
                         $"frame={Time.frameCount} player='{DescribePlayer(player)}' " +
                         "initialized=False reason='restore_diagnostics_not_initialized' " +
@@ -868,7 +868,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     !candidate.EvaluateVanillaRestPlausibility().Plausible)
                 {
                     reason = "candidate_still_implausible";
-                    logger?.LogInfo(
+                    logger?.LogDebug(
                         "[RestoreSeam.tprig] rest_baseline_recapture_skipped: " +
                         $"frame={Time.frameCount} player='{DescribePlayer(player)}' " +
                         $"candidatePresent={candidate != null} " +
@@ -883,7 +883,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     plausibleAtCapture: true,
                     ThirdPersonRigRuntimeSettledSource);
                 PristineThirdPersonRigPoses[player] = candidate;
-                logger?.LogInfo(
+                logger?.LogDebug(
                     "[RestoreSeam.tprig] rest_baseline_recaptured: " +
                     $"frame={Time.frameCount} player='{DescribePlayer(player)}' " +
                     $"outliersBefore={storedPlausibility.PositionOutliers + storedPlausibility.RotationOutliers + storedPlausibility.ScaleOutliers} " +
@@ -896,7 +896,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             catch (Exception exception)
             {
                 reason = "recapture_failed:" + exception.Message;
-                logger?.LogInfo(
+                logger?.LogDebug(
                     "[RestoreSeam.tprig] rest_baseline_recapture_skipped: " +
                     $"frame={Time.frameCount} player='{DescribePlayer(player)}' " +
                     $"reason='{SanitizeLogValue(reason)}' action='retry_next_clean_entry'.");
@@ -968,7 +968,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 if (!remoteRigProbeSessionBeginUninitializedLogged)
                 {
                     remoteRigProbeSessionBeginUninitializedLogged = true;
-                    StaticLogger?.LogInfo(
+                    StaticLogger?.LogDebug(
                         "[RemoteRigDiff] gate: " +
                         $"frame={Time.frameCount} phase='session_begin' " +
                         $"player='{DescribePlayer(player)}' initialized=False " +
@@ -984,7 +984,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             string playerDescription = DescribePlayer(player);
             if (!enabled)
             {
-                logger?.LogInfo(
+                logger?.LogDebug(
                     "[RemoteRigDiff] gate: " +
                     $"frame={Time.frameCount} phase='session_begin' " +
                     $"player='{playerDescription}' enabled=False action='skip'.");
@@ -1010,7 +1010,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
             if (!enabled)
             {
-                logger?.LogInfo(
+                logger?.LogDebug(
                     "[RemoteRigDiff] gate: " +
                     $"frame={Time.frameCount} phase='restore_schedule' " +
                     $"probeId={probeId} player='{playerDescription}' " +
@@ -1044,7 +1044,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
                 if (!enabled)
                 {
-                    logger?.LogInfo(
+                    logger?.LogDebug(
                         "[RemoteRigDiff] gate: " +
                         $"frame={Time.frameCount} phase='scheduled_samples' " +
                         $"probeId={schedule.ProbeId} " +
@@ -1256,7 +1256,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
                 if (scanRoot == null)
                 {
-                    logger?.LogInfo(
+                    logger?.LogDebug(
                         "[IkBakeProbe] sample_unavailable: " +
                         $"frame={Time.frameCount} phase='{phase}' " +
                         $"player='{playerDescription}' reason='rig_root_unavailable'.");
@@ -1269,7 +1269,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     ReadIkConstraints(scanRoot, twoBoneIkConstraintType);
                 Component[] chainConstraints =
                     ReadIkConstraints(scanRoot, chainIkConstraintType);
-                logger?.LogInfo(
+                logger?.LogDebug(
                     "[IkBakeProbe] sample_begin: " +
                     $"frame={Time.frameCount} phase='{phase}' player='{playerDescription}' " +
                     $"scanRoot='{scanRootSource}' root='{scanRoot.name}' " +
@@ -1318,7 +1318,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                         degenerate++;
                 }
 
-                logger?.LogInfo(
+                logger?.LogDebug(
                     "[IkBakeProbe] sample_end: " +
                     $"frame={Time.frameCount} phase='{phase}' player='{playerDescription}' " +
                     $"constraints={logged} degenerate={degenerate}.");
@@ -1422,7 +1422,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     (chain.Count > 1 && minLinkDistance < IkBakeDegenerateThreshold) ||
                     minLossyScale < IkBakeDegenerateThreshold;
 
-                logger?.LogInfo(
+                logger?.LogDebug(
                     "[IkBakeProbe] constraint: " +
                     $"frame={Time.frameCount} phase='{phase}' player='{playerDescription}' " +
                     $"kind='{kind}' path='{path}' weight={FormatFloat(weight)} " +
@@ -1461,7 +1461,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             }
             catch (Exception exception)
             {
-                logger?.LogInfo(
+                logger?.LogDebug(
                     "[IkBakeProbe] constraint_unavailable: " +
                     $"frame={Time.frameCount} phase='{phase}' player='{playerDescription}' " +
                     $"kind='{kind}' path='{path}' " +
@@ -2196,7 +2196,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 if (!playerAwakeCaptureUninitializedLogged)
                 {
                     playerAwakeCaptureUninitializedLogged = true;
-                    StaticLogger?.LogInfo(
+                    StaticLogger?.LogDebug(
                         "[RestoreSeam.tprig] pristine_capture_skipped: " +
                         $"frame={Time.frameCount} player='{DescribePlayer(player)}' " +
                         $"initialized=False source='{ThirdPersonRigAuthoredDefaultSource}' " +
@@ -2228,7 +2228,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 CameraChainPoseSnapshot candidate = CameraChainPoseSnapshot.Capture(player);
                 if (candidate == null || candidate.Count == 0)
                 {
-                    StaticLogger?.LogInfo(
+                    StaticLogger?.LogDebug(
                         "[RestoreSeam.camerachain] pristine_capture_skipped: " +
                         $"frame={Time.frameCount} player='{DescribePlayer(player)}' " +
                         $"source='{CameraChainAuthoredDefaultSource}' " +
@@ -2237,7 +2237,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 }
 
                 PristineCameraChainPoses[player] = candidate;
-                StaticLogger?.LogInfo(
+                StaticLogger?.LogDebug(
                     "[RestoreSeam.camerachain] pristine_captured: " +
                     $"frame={Time.frameCount} player='{DescribePlayer(player)}' " +
                     $"transforms={candidate.Count} missing='{candidate.MissingTargets}' " +
@@ -2246,7 +2246,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             }
             catch (Exception exception)
             {
-                StaticLogger?.LogInfo(
+                StaticLogger?.LogDebug(
                     "[RestoreSeam.camerachain] pristine_capture_skipped: " +
                     $"frame={Time.frameCount} player='{DescribePlayer(player)}' " +
                     $"source='{CameraChainAuthoredDefaultSource}' " +
@@ -2372,7 +2372,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 return false;
             }
 
-            StaticLogger?.LogInfo(
+            StaticLogger?.LogDebug(
                 "[RestoreSeam.camerachain] rest_baseline_refined: " +
                 $"frame={Time.frameCount} player='{DescribePlayer(player)}' " +
                 $"before[{beforePositions}] after[{pristine.DescribePositions()}] " +
@@ -2554,7 +2554,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             string playerDescription = DescribePlayer(player);
             if (!enabled)
             {
-                logger?.LogInfo(
+                logger?.LogDebug(
                     "[RestoreSeam.tprig] pristine_capture_skipped: " +
                     $"frame={Time.frameCount} player='{playerDescription}' " +
                     $"localPlayer={localPlayer} enabled=False " +
@@ -2564,7 +2564,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
             if (player == null)
             {
-                logger?.LogInfo(
+                logger?.LogDebug(
                     "[RestoreSeam.tprig] pristine_capture_skipped: " +
                     $"frame={Time.frameCount} player='<null>' localPlayer=False enabled=True " +
                     "reason='player_missing' action='use_equip_fallback'.");
@@ -2573,7 +2573,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
             if (PristineThirdPersonRigPoses.ContainsKey(player))
             {
-                logger?.LogInfo(
+                logger?.LogDebug(
                     "[RestoreSeam.tprig] pristine_capture_skipped: " +
                     $"frame={Time.frameCount} player='{playerDescription}' " +
                     $"localPlayer={localPlayer} enabled=True " +
@@ -2582,7 +2582,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 return;
             }
 
-            logger?.LogInfo(
+            logger?.LogDebug(
                 "[RestoreSeam.tprig] pristine_capture_skipped: " +
                 $"frame={Time.frameCount} player='{playerDescription}' " +
                 $"localPlayer={localPlayer} enabled=True baseline_contaminated=True " +
@@ -2598,7 +2598,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             const string source = ThirdPersonRigAuthoredDefaultSource;
             if (!enabled)
             {
-                logger?.LogInfo(
+                logger?.LogDebug(
                     "[RestoreSeam.tprig] pristine_capture_skipped: " +
                     $"frame={Time.frameCount} player='{playerDescription}' " +
                     $"localPlayer={localPlayer} enabled=False source='{source}' " +
@@ -2608,7 +2608,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
             if (player == null)
             {
-                logger?.LogInfo(
+                logger?.LogDebug(
                     "[RestoreSeam.tprig] pristine_capture_skipped: " +
                     $"frame={Time.frameCount} player='<null>' localPlayer=False enabled=True " +
                     $"source='{source}' reason='player_missing' action='skip'.");
@@ -2617,7 +2617,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
 
             if (PristineThirdPersonRigPoses.ContainsKey(player))
             {
-                logger?.LogInfo(
+                logger?.LogDebug(
                     "[RestoreSeam.tprig] pristine_capture_skipped: " +
                     $"frame={Time.frameCount} player='{playerDescription}' " +
                     $"localPlayer={localPlayer} enabled=True source='{source}' " +
@@ -2631,7 +2631,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     ThirdPersonRigPoseSnapshot.Capture(player);
                 if (candidate == null || candidate.TotalCount == 0)
                 {
-                    logger?.LogInfo(
+                    logger?.LogDebug(
                         "[RestoreSeam.tprig] pristine_capture_skipped: " +
                         $"frame={Time.frameCount} player='{playerDescription}' " +
                         $"localPlayer={localPlayer} enabled=True source='{source}' " +
@@ -2645,7 +2645,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 string sanityAction = plausibility.Plausible
                     ? "accept_authored_default"
                     : "accept_authored_default_pending_runtime_recapture";
-                logger?.LogInfo(
+                logger?.LogDebug(
                     "[RestoreSeam.tprig] pristine_capture_sanity: " +
                     $"frame={Time.frameCount} player='{playerDescription}' " +
                     $"localPlayer={localPlayer} enabled=True source='{source}' " +
@@ -2669,7 +2669,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 // idle session entry can replace it with a runtime-settled recapture.
                 candidate.SetCaptureMetadata(plausibility.Plausible, source);
                 PristineThirdPersonRigPoses[player] = candidate;
-                logger?.LogInfo(
+                logger?.LogDebug(
                     "[RestoreSeam.tprig] pristine_captured: " +
                     $"frame={Time.frameCount} player='{playerDescription}' " +
                     $"localPlayer={localPlayer} enabled=True baseline_contaminated=False " +
@@ -2681,7 +2681,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             }
             catch (Exception exception)
             {
-                logger?.LogInfo(
+                logger?.LogDebug(
                     "[RestoreSeam.tprig] pristine_capture_skipped: " +
                     $"frame={Time.frameCount} player='{playerDescription}' " +
                     $"localPlayer={localPlayer} enabled=True source='{source}' " +
@@ -2708,7 +2708,7 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                     rigArms,
                     ResolveTwoBoneIkConstraintType(),
                     ResolveChainIkConstraintType());
-                logger?.LogInfo(
+                logger?.LogDebug(
                     "[RigDiff] pristine_captured: " +
                     $"frame={Time.frameCount} transforms={pristineRig.Transforms.Length} " +
                     $"twoBoneIkConstraints={pristineRig.TwoBoneConstraints.Length} " +
