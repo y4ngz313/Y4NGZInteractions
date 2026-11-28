@@ -21,9 +21,10 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 ref ___previousAnimationStateHash,
                 requiredCount);
 
-            if (currentExpanded || previousExpanded)
+            if ((currentExpanded || previousExpanded) &&
+                InteractionAnimationApiRestoreDiagnostics.InteractionTelemetryLoggerEnabled)
             {
-                Plugin.Log?.LogDebug(
+                Plugin.Log?.LogInfo(
                     "[LCInteractionAnimationAPI] " +
                     "live_body.sync_state_capacity_expanded: " +
                     $"player={__instance.playerClientId}, layers={requiredCount}.");

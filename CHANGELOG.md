@@ -1,6 +1,6 @@
 # Changelog
 
-Last updated: 2026-11-16
+Last updated: 2026-11-28
 
 ## 1.0.7
 
@@ -23,6 +23,9 @@ Last updated: 2026-11-16
 - With First Person View installed, ending an interaction while looking down
   no longer shows a frame from inside the body: the library leaves the camera
   offset that First Person View sets alone (#59).
+- Routine interaction telemetry no longer goes to the log; a new
+  `Enable Interaction Telemetry Logger` config entry (default off) turns it
+  back on at Info (Y4NGZCompany#2128).
 
 ## 1.0.6
 

@@ -112,10 +112,11 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 // Every authored clip keys the root x and y at 0.
                 root.localPosition = new Vector3(0f, 0f, decision.TargetLocalZ);
 
-                if (Time.realtimeSinceStartup >= nextCorrectionLogAllowedAtRealtime)
+                if (InteractionAnimationApiRestoreDiagnostics.RestoreSeamFrameLoggerEnabled &&
+                    Time.realtimeSinceStartup >= nextCorrectionLogAllowedAtRealtime)
                 {
                     nextCorrectionLogAllowedAtRealtime = Time.realtimeSinceStartup + 1f;
-                    InteractionAnimationApiRestoreDiagnostics.StaticLogger?.LogDebug(
+                    InteractionAnimationApiRestoreDiagnostics.StaticLogger?.LogInfo(
                         "[RestoreSeam.metarigroot] owner_corrected: " +
                         $"phase={phase} frame={Time.frameCount} state={state.shortNameHash} " +
                         $"inTransition={inTransition} nextState={nextStateHash} " +

@@ -76,10 +76,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             }
 
             packs.Add(snapshot.PackId, snapshot);
-            logger?.LogDebug(
-                "[LCInteractionAnimationAPI] pack.registered: " +
-                $"pack='{snapshot.PackId}' version='{snapshot.Version}' " +
-                $"interactions={snapshot.InteractionCount}.");
+            if (InteractionAnimationApiRestoreDiagnostics.InteractionTelemetryLoggerEnabled)
+            {
+                logger?.LogInfo(
+                    "[LCInteractionAnimationAPI] pack.registered: " +
+                    $"pack='{snapshot.PackId}' version='{snapshot.Version}' " +
+                    $"interactions={snapshot.InteractionCount}.");
+            }
             return true;
         }
 
@@ -160,10 +163,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             FinalizeConflicts(suspended);
             session.StartSequence = ++nextStartSequence;
             activeSessions.Add(handle, session);
-            logger?.LogDebug(
-                "[LCInteractionAnimationAPI] interaction.started: " +
-                $"handle={handle} pack='{pack.PackId}' interaction='{definition.InteractionId}' " +
-                $"presentation='{definition.PresentationKind}'.");
+            if (InteractionAnimationApiRestoreDiagnostics.InteractionTelemetryLoggerEnabled)
+            {
+                logger?.LogInfo(
+                    "[LCInteractionAnimationAPI] interaction.started: " +
+                    $"handle={handle} pack='{pack.PackId}' interaction='{definition.InteractionId}' " +
+                    $"presentation='{definition.PresentationKind}'.");
+            }
             return true;
         }
 
@@ -208,9 +214,12 @@ namespace Y4NGZInteractions.InteractionAnimationApi
             leases.Release(handle);
             RemoveActiveSession(handle);
             NotifyEnded(session, reason);
-            logger?.LogDebug(
-                "[LCInteractionAnimationAPI] interaction.stopped: " +
-                $"handle={handle} reason='{reason}'.");
+            if (InteractionAnimationApiRestoreDiagnostics.InteractionTelemetryLoggerEnabled)
+            {
+                logger?.LogInfo(
+                    "[LCInteractionAnimationAPI] interaction.stopped: " +
+                    $"handle={handle} reason='{reason}'.");
+            }
             return true;
         }
 
@@ -263,9 +272,12 @@ namespace Y4NGZInteractions.InteractionAnimationApi
                 return false;
             }
             float seconds = session.BeginExit();
-            logger?.LogDebug(
-                "[LCInteractionAnimationAPI] interaction.exit_begun: " +
-                $"handle={handle} exitSeconds={seconds:0.###}.");
+            if (InteractionAnimationApiRestoreDiagnostics.InteractionTelemetryLoggerEnabled)
+            {
+                logger?.LogInfo(
+                    "[LCInteractionAnimationAPI] interaction.exit_begun: " +
+                    $"handle={handle} exitSeconds={seconds:0.###}.");
+            }
             return true;
         }
 

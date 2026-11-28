@@ -60,4 +60,4 @@ The API restores before InteractionEnded. If state still drifts:
 5. test explicit stop, natural end, interruption, death, ladder, and round unload;
 6. report the manifest, presentation kind, stop reason, and exact reproduction cycle.
 
-Verbose rig/camera probes are off by default. Manual hotkeys live in the sample plugin, not the production DLL.
+Verbose rig/camera probes are off by default. Routine per-session telemetry (live-body start, stop, restore, props, clip packs, viewmodel and pack lifecycle lines) is off by default too; set `Enable Interaction Telemetry Logger` to true in the Interaction Animation API Restore Diagnostics config section to write it at Info. Manual hotkeys live in the sample plugin, not the production DLL.

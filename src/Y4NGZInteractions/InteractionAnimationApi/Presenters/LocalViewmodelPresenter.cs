@@ -84,9 +84,12 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             }
 
             PreloadingBundlePaths.Add(bundlePath);
-            logger?.LogDebug(
-                "[LCInteractionAnimationAPI] viewmodel.bundle_preload_started: " +
-                $"path='{bundlePath}' fileBytes={new FileInfo(bundlePath).Length}.");
+            if (InteractionAnimationApiRestoreDiagnostics.InteractionTelemetryLoggerEnabled)
+            {
+                logger?.LogInfo(
+                    "[LCInteractionAnimationAPI] viewmodel.bundle_preload_started: " +
+                    $"path='{bundlePath}' fileBytes={new FileInfo(bundlePath).Length}.");
+            }
             Y4NGZInteractions.Plugin.Host.StartCoroutine(
                 PreloadBundleCoroutine(bundlePath, bundleInternalName, logger));
             return true;
@@ -171,11 +174,14 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             FireTriggerIfExists(manifest.localViewmodel.enterTrigger);
             viewmodelAnimator.Update(0f);
             EvaluateViewmodelRigBuilders();
-            context.Logger?.LogDebug(
-                "[LCInteractionAnimationAPI] local_viewmodel.started: " +
-                $"handle={context.Handle} interaction='{manifest.interactionId}' " +
-                $"prefab='{manifest.localViewmodel.prefabAssetName}' controller='{manifest.localViewmodel.controllerAssetName}' " +
-                $"cameraAnchorPath='{manifest.localViewmodel.cameraAnchorPath}'.");
+            if (InteractionAnimationApiRestoreDiagnostics.InteractionTelemetryLoggerEnabled)
+            {
+                context.Logger?.LogInfo(
+                    "[LCInteractionAnimationAPI] local_viewmodel.started: " +
+                    $"handle={context.Handle} interaction='{manifest.interactionId}' " +
+                    $"prefab='{manifest.localViewmodel.prefabAssetName}' controller='{manifest.localViewmodel.controllerAssetName}' " +
+                    $"cameraAnchorPath='{manifest.localViewmodel.cameraAnchorPath}'.");
+            }
             return true;
         }
 
@@ -196,9 +202,12 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             SetBoolIfExists(viewmodel.activeBool, false);
             FireTriggerIfExists(viewmodel.exitTrigger);
             float exitSeconds = Mathf.Max(0f, viewmodel.exitSeconds);
-            context.Logger?.LogDebug(
-                "[LCInteractionAnimationAPI] local_viewmodel.exit_started: " +
-                $"handle={context.Handle} exitSeconds={exitSeconds:0.###}.");
+            if (InteractionAnimationApiRestoreDiagnostics.InteractionTelemetryLoggerEnabled)
+            {
+                context.Logger?.LogInfo(
+                    "[LCInteractionAnimationAPI] local_viewmodel.exit_started: " +
+                    $"handle={context.Handle} exitSeconds={exitSeconds:0.###}.");
+            }
             return exitSeconds;
         }
 
@@ -245,9 +254,12 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             RestoreLiveFirstPersonRenderers();
             DestroyViewmodel();
             ReleaseViewmodelBundle();
-            context?.Logger?.LogDebug(
-                "[LCInteractionAnimationAPI] local_viewmodel.stopped: " +
-                $"handle={context.Handle} reason='{stopReason}' restoredRenderers={hiddenRenderers.Count}.");
+            if (InteractionAnimationApiRestoreDiagnostics.InteractionTelemetryLoggerEnabled)
+            {
+                context?.Logger?.LogInfo(
+                    "[LCInteractionAnimationAPI] local_viewmodel.stopped: " +
+                    $"handle={context.Handle} reason='{stopReason}' restoredRenderers={hiddenRenderers.Count}.");
+            }
             hiddenRenderers.Clear();
             active = false;
             exitRequested = false;
@@ -339,9 +351,12 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                 }
             }
 
-            context?.Logger?.LogDebug(
-                "[LCInteractionAnimationAPI] local_viewmodel.rig_rebuilt: " +
-                $"handle={context?.Handle} rigBuilders={rebuilt}.");
+            if (InteractionAnimationApiRestoreDiagnostics.InteractionTelemetryLoggerEnabled)
+            {
+                context?.Logger?.LogInfo(
+                    "[LCInteractionAnimationAPI] local_viewmodel.rig_rebuilt: " +
+                    $"handle={context?.Handle} rigBuilders={rebuilt}.");
+            }
         }
 
         private void EvaluateViewmodelRigBuilders()
@@ -441,9 +456,12 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             }
 
             ownsViewmodelBundle = true;
-            context.Logger?.LogDebug(
-                "[LCInteractionAnimationAPI] viewmodel.bundle_loaded: " +
-                $"handle={context.Handle} path='{bundlePath}'.");
+            if (InteractionAnimationApiRestoreDiagnostics.InteractionTelemetryLoggerEnabled)
+            {
+                context.Logger?.LogInfo(
+                    "[LCInteractionAnimationAPI] viewmodel.bundle_loaded: " +
+                    $"handle={context.Handle} path='{bundlePath}'.");
+            }
             return true;
         }
 
@@ -466,9 +484,12 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             }
 
             PreloadedBundles[bundlePath] = bundle;
-            logger?.LogDebug(
-                "[LCInteractionAnimationAPI] viewmodel.bundle_preload_completed: " +
-                $"path='{bundlePath}' internalName='{bundle.name}' expectedInternalName='{bundleInternalName}'.");
+            if (InteractionAnimationApiRestoreDiagnostics.InteractionTelemetryLoggerEnabled)
+            {
+                logger?.LogInfo(
+                    "[LCInteractionAnimationAPI] viewmodel.bundle_preload_completed: " +
+                    $"path='{bundlePath}' internalName='{bundle.name}' expectedInternalName='{bundleInternalName}'.");
+            }
         }
 
         private static AssetBundle FindLoadedBundle(string bundleInternalName, string bundlePath)
@@ -551,10 +572,13 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             EvaluateViewmodelRigBuilders();
 
             ApplyViewmodelRendererVisibility(manifest);
-            context.Logger?.LogDebug(
-                "[LCInteractionAnimationAPI] local_viewmodel.instantiated: " +
-                $"handle={context.Handle} prefab='{manifest.localViewmodel.prefabAssetName}' " +
-                $"controller='{manifest.localViewmodel.controllerAssetName}' camera='{cameraParent.name}'.");
+            if (InteractionAnimationApiRestoreDiagnostics.InteractionTelemetryLoggerEnabled)
+            {
+                context.Logger?.LogInfo(
+                    "[LCInteractionAnimationAPI] local_viewmodel.instantiated: " +
+                    $"handle={context.Handle} prefab='{manifest.localViewmodel.prefabAssetName}' " +
+                    $"controller='{manifest.localViewmodel.controllerAssetName}' camera='{cameraParent.name}'.");
+            }
             return true;
         }
 
@@ -604,174 +628,20 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             viewmodelRoot.transform.localPosition =
                 manifest.localViewmodel.cameraLocalPosition.ToUnityVector3() - anchorOffset;
 
-            context.Logger?.LogDebug(
-                "[LCInteractionAnimationAPI] local_viewmodel.anchor_aligned: " +
-                $"handle={context.Handle} anchorPath='{anchorPath}' path='{GetTransformPath(anchor)}' " +
-                $"anchorRootLocalPosition={FormatVector(anchorRootLocalPosition)} " +
-                $"anchorRootLocalEuler={FormatVector(anchorRootLocalRotation.eulerAngles)} " +
-                $"targetLocalPosition={FormatVector(manifest.localViewmodel.cameraLocalPosition)} " +
-                $"targetLocalEuler={FormatVector(manifest.localViewmodel.cameraLocalEuler)} " +
-                $"rootLocalPosition={FormatVector(viewmodelRoot.transform.localPosition)} " +
-                $"rootLocalEuler={FormatVector(viewmodelRoot.transform.localEulerAngles)} " +
-                $"rootLocalScale={FormatVector(viewmodelRoot.transform.localScale)}.");
+            if (InteractionAnimationApiRestoreDiagnostics.InteractionTelemetryLoggerEnabled)
+            {
+                context.Logger?.LogInfo(
+                    "[LCInteractionAnimationAPI] local_viewmodel.anchor_aligned: " +
+                    $"handle={context.Handle} anchorPath='{anchorPath}' path='{GetTransformPath(anchor)}' " +
+                    $"anchorRootLocalPosition={FormatVector(anchorRootLocalPosition)} " +
+                    $"anchorRootLocalEuler={FormatVector(anchorRootLocalRotation.eulerAngles)} " +
+                    $"targetLocalPosition={FormatVector(manifest.localViewmodel.cameraLocalPosition)} " +
+                    $"targetLocalEuler={FormatVector(manifest.localViewmodel.cameraLocalEuler)} " +
+                    $"rootLocalPosition={FormatVector(viewmodelRoot.transform.localPosition)} " +
+                    $"rootLocalEuler={FormatVector(viewmodelRoot.transform.localEulerAngles)} " +
+                    $"rootLocalScale={FormatVector(viewmodelRoot.transform.localScale)}.");
+            }
             return true;
-        }
-
-        private void LogCameraDiagnostics(
-            Camera camera,
-            Transform cameraParent,
-            InteractionAnimationManifest manifest)
-        {
-            if (context?.Logger == null || viewmodelRoot == null)
-                return;
-
-            Vector3 cameraToRoot = camera != null
-                ? viewmodelRoot.transform.position - camera.transform.position
-                : Vector3.zero;
-            float distanceToRoot = camera != null ? cameraToRoot.magnitude : -1f;
-            float forwardDot = camera != null && cameraToRoot.sqrMagnitude > 0.0001f
-                ? Vector3.Dot(camera.transform.forward, cameraToRoot.normalized)
-                : 0f;
-            Vector3 rootViewport = camera != null
-                ? camera.WorldToViewportPoint(viewmodelRoot.transform.position)
-                : Vector3.zero;
-            bool rootLayerVisible = IsLayerInCullingMask(camera, viewmodelRoot.layer);
-
-            context.Logger.LogDebug(
-                "[LCInteractionAnimationAPI] local_viewmodel.camera_diagnostics: " +
-                $"handle={context.Handle} camera='{SafeName(camera)}' " +
-                $"cameraEnabled={(camera != null && camera.enabled)} " +
-                $"cameraActive={(camera != null && camera.gameObject.activeInHierarchy)} " +
-                $"cameraLayer={(camera != null ? camera.gameObject.layer : -1)} " +
-                $"cullingMask={(camera != null ? camera.cullingMask : 0)} " +
-                $"nearClip={FormatFloat(camera != null ? camera.nearClipPlane : -1f)} " +
-                $"farClip={FormatFloat(camera != null ? camera.farClipPlane : -1f)} " +
-                $"fieldOfView={FormatFloat(camera != null ? camera.fieldOfView : -1f)} " +
-                $"orthographic={(camera != null && camera.orthographic)} " +
-                $"parent='{GetTransformPath(cameraParent)}' root='{GetTransformPath(viewmodelRoot.transform)}' " +
-                $"rootActive={viewmodelRoot.activeSelf} rootActiveInHierarchy={viewmodelRoot.activeInHierarchy} " +
-                $"rootLayer={viewmodelRoot.layer} rootLayerVisible={rootLayerVisible} " +
-                $"rootLocalPosition={FormatVector(viewmodelRoot.transform.localPosition)} " +
-                $"manifestCameraAnchor='{manifest.localViewmodel.cameraAnchorPath}' " +
-                $"manifestLocalPosition={FormatVector(manifest.localViewmodel.cameraLocalPosition)} " +
-                $"rootLocalEuler={FormatVector(viewmodelRoot.transform.localEulerAngles)} " +
-                $"manifestLocalEuler={FormatVector(manifest.localViewmodel.cameraLocalEuler)} " +
-                $"rootLocalScale={FormatVector(viewmodelRoot.transform.localScale)} " +
-                $"rootLossyScale={FormatVector(viewmodelRoot.transform.lossyScale)} " +
-                $"rootWorldPosition={FormatVector(viewmodelRoot.transform.position)} " +
-                $"cameraWorldPosition={FormatVector(camera != null ? camera.transform.position : Vector3.zero)} " +
-                $"distanceToCamera={FormatFloat(distanceToRoot)} forwardDot={FormatFloat(forwardDot)} " +
-                $"rootViewport={FormatVector(rootViewport)}.");
-        }
-
-        private void BeginPostFrameRendererDiagnostics(Camera camera)
-        {
-            if (Y4NGZInteractions.Plugin.Host == null || context == null)
-                return;
-
-            Y4NGZInteractions.Plugin.Host.StartCoroutine(
-                PostFrameRendererDiagnosticsCoroutine(context.Handle, camera));
-        }
-
-        private IEnumerator PostFrameRendererDiagnosticsCoroutine(
-            InteractionAnimationHandle handle,
-            Camera camera)
-        {
-            yield return new WaitForEndOfFrame();
-
-            if (context == null || context.Handle != handle || viewmodelRoot == null)
-                yield break;
-
-            LogRendererDiagnostics(
-                camera,
-                "post_frame",
-                "local_viewmodel.post_frame_renderer_diagnostics");
-        }
-
-        private void LogRendererDiagnostics(Camera camera)
-        {
-            LogRendererDiagnostics(camera, "start", "local_viewmodel.renderer_diagnostics");
-        }
-
-        private void LogRendererDiagnostics(Camera camera, string phase, string eventName)
-        {
-            if (context?.Logger == null || viewmodelRoot == null)
-                return;
-
-            Renderer[] renderers = viewmodelRoot.GetComponentsInChildren<Renderer>(true);
-            Plane[] frustumPlanes = camera != null
-                ? GeometryUtility.CalculateFrustumPlanes(camera)
-                : null;
-            context.Logger.LogDebug(
-                "[LCInteractionAnimationAPI] " + eventName + "_summary: " +
-                $"handle={context.Handle} phase='{phase}' rendererCount={renderers.Length} camera='{SafeName(camera)}'.");
-
-            for (int i = 0; i < renderers.Length; i++)
-            {
-                Renderer renderer = renderers[i];
-                if (renderer == null)
-                    continue;
-
-                Bounds bounds = renderer.bounds;
-                Vector3 cameraToBounds = camera != null
-                    ? bounds.center - camera.transform.position
-                    : Vector3.zero;
-                float distanceToCamera = camera != null ? cameraToBounds.magnitude : -1f;
-                float forwardDot = camera != null && cameraToBounds.sqrMagnitude > 0.0001f
-                    ? Vector3.Dot(camera.transform.forward, cameraToBounds.normalized)
-                    : 0f;
-                Vector3 viewportCenter = camera != null
-                    ? camera.WorldToViewportPoint(bounds.center)
-                    : Vector3.zero;
-                bool inCameraFrustum = frustumPlanes != null &&
-                    GeometryUtility.TestPlanesAABB(frustumPlanes, bounds);
-                bool cameraMaskIncludesLayer = IsLayerInCullingMask(camera, renderer.gameObject.layer);
-                SkinnedMeshRenderer skinnedRenderer = renderer as SkinnedMeshRenderer;
-                Material[] materials = GetSharedMaterials(renderer);
-
-                context.Logger.LogDebug(
-                    "[LCInteractionAnimationAPI] " + eventName + ": " +
-                    $"handle={context.Handle} phase='{phase}' index={i} total={renderers.Length} " +
-                    $"renderer='{GetTransformPath(renderer.transform)}' name='{renderer.name}' " +
-                    $"type='{renderer.GetType().Name}' active={renderer.gameObject.activeSelf} " +
-                    $"activeInHierarchy={renderer.gameObject.activeInHierarchy} enabled={renderer.enabled} " +
-                    $"isVisible={renderer.isVisible} layer={renderer.gameObject.layer} " +
-                    $"cameraMaskIncludesLayer={cameraMaskIncludesLayer} inCameraFrustum={inCameraFrustum} " +
-                    $"boundsCenter={FormatVector(bounds.center)} boundsSize={FormatVector(bounds.size)} " +
-                    $"distanceToCamera={FormatFloat(distanceToCamera)} forwardDot={FormatFloat(forwardDot)} " +
-                    $"viewportCenter={FormatVector(viewportCenter)} " +
-                    $"updateWhenOffscreen={(skinnedRenderer != null && skinnedRenderer.updateWhenOffscreen)} " +
-                    $"rootBone='{SafeName(skinnedRenderer != null ? skinnedRenderer.rootBone : null)}' " +
-                    $"sharedMaterialCount={materials.Length}.");
-
-                LogRendererMaterials(renderer, i, materials);
-            }
-        }
-
-        private void LogRendererMaterials(Renderer renderer, int rendererIndex, Material[] materials)
-        {
-            if (context?.Logger == null)
-                return;
-
-            if (materials.Length == 0)
-            {
-                context.Logger.LogDebug(
-                    "[LCInteractionAnimationAPI] local_viewmodel.renderer_material: " +
-                    $"handle={context.Handle} rendererIndex={rendererIndex} materialIndex=-1 material='<none>'.");
-                return;
-            }
-
-            for (int i = 0; i < materials.Length; i++)
-            {
-                Material material = materials[i];
-                Shader shader = material != null ? material.shader : null;
-                context.Logger.LogDebug(
-                    "[LCInteractionAnimationAPI] local_viewmodel.renderer_material: " +
-                    $"handle={context.Handle} rendererIndex={rendererIndex} materialIndex={i} " +
-                    $"renderer='{GetTransformPath(renderer.transform)}' material='{SafeName(material)}' " +
-                    $"shader='{SafeName(shader)}' renderQueue={(material != null ? material.renderQueue : -1)} " +
-                    $"color={TryFormatMaterialColor(material)}.");
-            }
         }
 
         private void ApplyViewmodelRendererVisibility(InteractionAnimationManifest manifest)
@@ -810,9 +680,12 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
 
             hiddenRenderers.Add(RendererState.Capture(renderer));
             renderer.enabled = false;
-            context.Logger?.LogDebug(
-                "[LCInteractionAnimationAPI] local_viewmodel.renderer_hidden: " +
-                $"handle={context.Handle} renderer='{renderer.name}'.");
+            if (InteractionAnimationApiRestoreDiagnostics.InteractionTelemetryLoggerEnabled)
+            {
+                context.Logger?.LogInfo(
+                    "[LCInteractionAnimationAPI] local_viewmodel.renderer_hidden: " +
+                    $"handle={context.Handle} renderer='{renderer.name}'.");
+            }
         }
 
         private void RestoreLiveFirstPersonRenderers()
@@ -915,46 +788,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             return new string(chars);
         }
 
-        private static bool IsLayerInCullingMask(Camera camera, int layer)
-        {
-            if (camera == null || layer < 0 || layer > 31)
-                return false;
-
-            return (camera.cullingMask & (1 << layer)) != 0;
-        }
-
-        private static Material[] GetSharedMaterials(Renderer renderer)
-        {
-            if (renderer == null)
-                return Array.Empty<Material>();
-
-            try
-            {
-                return renderer.sharedMaterials ?? Array.Empty<Material>();
-            }
-            catch
-            {
-                return Array.Empty<Material>();
-            }
-        }
-
-        private static string TryFormatMaterialColor(Material material)
-        {
-            if (material == null)
-                return "<null>";
-
-            try
-            {
-                return material.HasProperty("_Color")
-                    ? FormatColor(material.color)
-                    : "<no _Color>";
-            }
-            catch
-            {
-                return "<unavailable>";
-            }
-        }
-
         private static string GetRelativeTransformPath(Transform root, Transform transform)
         {
             if (root == null || transform == null)
@@ -991,11 +824,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
             return string.Join("/", names.ToArray());
         }
 
-        private static string SafeName(Object unityObject)
-        {
-            return unityObject != null ? unityObject.name : "<null>";
-        }
-
         private static string FormatVector(Vector3 value)
         {
             return "(" +
@@ -1011,15 +839,6 @@ namespace Y4NGZInteractions.InteractionAnimationApi.Presenters
                    FormatFloat(value.x) + "," +
                    FormatFloat(value.y) + "," +
                    FormatFloat(value.z) + ")";
-        }
-
-        private static string FormatColor(Color value)
-        {
-            return "(" +
-                   FormatFloat(value.r) + "," +
-                   FormatFloat(value.g) + "," +
-                   FormatFloat(value.b) + "," +
-                   FormatFloat(value.a) + ")";
         }
 
         private static string FormatFloat(float value)
